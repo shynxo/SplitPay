@@ -86,9 +86,11 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
 
     LaunchedEffect(scanning) {
         if (scanning) {
-            delay(2200)
-            scanning = false
-            step = 1
+            BackendService.callApi("scan-receipt", """{"imageUri": "${receiptUri ?: ""}"}""") { success, response ->
+                scanning = false
+                step = 2 // Moves to "Assign" step after scan finishes
+                println("Backend response: $response")
+            }
         }
     }
 
@@ -409,8 +411,10 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                 haptic = HapticKind.Heavy,
                 enabled = phase != 2 && members.isNotEmpty(),
                 onClick = {
-                    toast(context, "Payment links sent (demo)")
                     phase = 1
+                    BackendService.callApi("create-split-invoice", """{"sessionId": "session_1"}""") { success, response ->
+                    phase = 2
+                    }
                 }
             )
         }
