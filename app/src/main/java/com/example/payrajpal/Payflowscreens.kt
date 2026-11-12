@@ -127,24 +127,41 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
 
     var step by rememberSaveable { mutableIntStateOf(if (route.recipient.isNotBlank()) 1 else 0) }
     var recipient by rememberSaveable { mutableStateOf(route.recipient) }
-    var detail by rememberSaveable { mutableStateOf("") }
+    var detail by rememberSaveable { mutableStateOf(route.email) }
     var amount by rememberSaveable { mutableStateOf("") }
     var note by rememberSaveable { mutableStateOf("") }
     var sourceIndex by rememberSaveable { mutableIntStateOf(0) }
     var pin by remember { mutableStateOf("") } // deliberately NOT saved
+    var paypalEmail by rememberSaveable { mutableStateOf("") }
     val haptics = LocalHaptics.current
+    val context = LocalContext.current
+
+    // "Pay contact" and "Request money" use the real PayPal rail. Bank / recharge / bills have no PayPal
+    // equivalent, so they remain demo screens.
+    val usesPayPal = kind == PayKind.PAY || kind == PayKind.REQUEST
+    val knownEmail = if (detail.contains("@")) detail.trim() else ""
+    val targetEmail = knownEmail.ifBlank { paypalEmail.trim() }
+    val emailOk = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(targetEmail)
     val refId = rememberSaveable { "PRP" + (100000000..999999999).random() }
     val paidAt = remember { SimpleDateFormat("d MMM yyyy, h:mm a", Locale.getDefault()).format(Date()) }
 
-    val sources = banks.map { it.bankName.toString() } + ui.cards.map { "${it.network} ••${it.last4}" }
-    val sourceLabel = sources.getOrElse(sourceIndex) { "your bank" }
+    val sources = listOf("PayPal · ${Session.email}")
+    val sourceLabel = sources.getOrElse(sourceIndex) { "PayPal" }
+    val recents = txsForRecents(vm)
     val amountValue = amount.toDoubleOrNull() ?: 0.0
 
     BackHandler(enabled = step in 1..2) {
         pin = ""
         if (step == 1 && route.recipient.isNotBlank()) nav.pop() else step -= 1
     }
-    BackHandler(enabled = step == 3) { /* can't leave while processing */ }
+    BackHandler(enabled = step == 3) {
+        // While PayPal is open or has failed the user may back out; otherwise wait for the result.
+        if (usesPayPal && (PayPalPay.phase == PayPhase.InBrowser || PayPalPay.phase is PayPhase.Failed)) {
+            PayPalPay.reset()
+            pin = ""
+            step = 1
+        }
+    }
 
     LaunchedEffect(pin) {
         if (pin.length == 4) {
@@ -154,10 +171,29 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
     }
     LaunchedEffect(step) {
         if (step == 3) {
-            delay(1700)
-            if (!kind.isRequest) vm.sendDirectPayment(recipient, amountValue, note)
+            if (kind == PayKind.PAY) {
+                PayPalPay.reset()
+                if (!emailOk) PayPalPay.fail("Enter a valid PayPal email for $recipient.")
+                else PayPalPay.start(context, Math.round(amountValue * 100), targetEmail, recipient, note)
+            } else if (kind == PayKind.REQUEST) {
+                PayPalPay.reset()
+                PayPalPay.request(context, Math.round(amountValue * 100), note) { url ->
+                    "Please pay me ${money(amountValue)} on PayRajpal: $url"
+                }
+            } else {
+                delay(1700) // demo screens (bank / recharge / bills)
+                step = 4
+                haptics.heavy()
+            }
+        }
+    }
+    // PayPal confirmed the money moved (or the request link was created): refresh history, show success.
+    LaunchedEffect(PayPalPay.phase) {
+        if (usesPayPal && step == 3 && PayPalPay.phase == PayPhase.Done) {
+            refreshHistory(vm)
             step = 4
             haptics.heavy()
+            PayPalPay.reset()
         }
     }
 
@@ -177,7 +213,7 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
         Box(Modifier.fillMaxSize().background(Pal.Bg)) {
             when (s) {
                 0 -> when (kind) {
-                    PayKind.PAY, PayKind.REQUEST -> ContactStep(kind, ui, onBack = { nav.pop() }, onPick = { name, d, preset ->
+                    PayKind.PAY, PayKind.REQUEST -> ContactStep(kind, recents, onBack = { nav.pop() }, onPick = { name, d, preset ->
                         recipient = name
                         detail = d
                         if (preset.isNotEmpty()) amount = preset
@@ -214,6 +250,10 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
                     sourceIndex = sourceIndex,
                     onSource = { sourceIndex = it },
                     onBack = { if (route.recipient.isNotBlank()) nav.pop() else step = 0 },
+                    needEmail = kind == PayKind.PAY && knownEmail.isBlank(),
+                    email = paypalEmail,
+                    onEmail = { paypalEmail = it },
+                    canContinue = kind != PayKind.PAY || emailOk,
                     onContinue = {
                         pin = ""
                         step = if (kind.isRequest) 3 else 2
@@ -230,7 +270,17 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
                         step = 1
                     }
                 )
-                3 -> ProcessingStep(kind)
+                3 -> if (usesPayPal) PayPalStep(
+                    phase = PayPalPay.phase,
+                    recipient = recipient,
+                    isRequest = kind == PayKind.REQUEST,
+                    onCheck = { PayPalPay.check() },
+                    onCancel = {
+                        PayPalPay.reset()
+                        pin = ""
+                        step = 1
+                    }
+                ) else ProcessingStep(kind)
                 else -> SuccessStep(
                     kind = kind,
                     recipient = recipient,
@@ -250,7 +300,7 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
 @Composable
 private fun ContactStep(
     kind: PayKind,
-    ui: PayUiViewModel,
+    recents: List<Contact>,
     onBack: () -> Unit,
     onPick: (String, String, String) -> Unit
 ) {
@@ -259,7 +309,7 @@ private fun ContactStep(
     val digits = q.filter(Char::isDigit)
     val looksLikeNumber = digits.length >= 10 && q.all { it.isDigit() || it == ' ' || it == '+' || it == '-' }
     val looksLikeUpi = q.contains("@") && q.length > 3
-    val matches = ui.contacts.filter { c ->
+    val matches = recents.filter { c ->
         q.isBlank() ||
                 c.name.contains(q, ignoreCase = true) ||
                 (digits.isNotEmpty() && c.phone.filter(Char::isDigit).contains(digits))
@@ -270,7 +320,7 @@ private fun ContactStep(
         PayTextField(
             value = query,
             onValueChange = { query = it },
-            label = "Name, phone number or UPI ID",
+            label = "Name or PayPal email",
             modifier = Modifier.padding(horizontal = 20.dp),
             leading = { Icon(Icons.Filled.Search, contentDescription = null) }
         )
@@ -305,7 +355,7 @@ private fun ContactStep(
                         }
                     }
                 }
-                item { SmallCaps("Contacts", Modifier.padding(bottom = 6.dp)) }
+                item { SmallCaps("Recent", Modifier.padding(bottom = 6.dp)) }
                 itemsIndexed(matches) { _, c ->
                     Row(
                         Modifier.fillMaxWidth().bounceClick { onPick(c.name, c.phone, "") }.padding(vertical = 10.dp),
@@ -320,7 +370,7 @@ private fun ContactStep(
                     }
                 }
                 if (matches.isEmpty() && !looksLikeNumber && !looksLikeUpi) {
-                    item { Text("No contacts found. Type a number or UPI ID instead.", fontSize = 14.sp, color = Pal.Muted) }
+                    item { Text("Nobody yet. Type their PayPal email above to pay them.", fontSize = 14.sp, color = Pal.Muted) }
                 }
             }
         }
@@ -521,6 +571,10 @@ private fun AmountStep(
     sourceIndex: Int,
     onSource: (Int) -> Unit,
     onBack: () -> Unit,
+    needEmail: Boolean = false,
+    email: String = "",
+    onEmail: (String) -> Unit = {},
+    canContinue: Boolean = true,
     onContinue: () -> Unit
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -585,6 +639,13 @@ private fun AmountStep(
             Expand(showNote) {
                 PayTextField(note, onNote, "Note (optional)", Modifier.padding(top = 12.dp))
             }
+            if (needEmail) {
+                PayTextField(
+                    email, onEmail, "Recipient's PayPal email",
+                    Modifier.padding(top = 12.dp),
+                    keyboardType = KeyboardType.Email
+                )
+            }
         }
 
         Column(Modifier.navigationBarsPadding().padding(bottom = 10.dp)) {
@@ -595,7 +656,7 @@ private fun AmountStep(
             CoralPill(
                 title = if (value > 0) "${kind.cta} ${money(value)}" else kind.cta,
                 modifier = Modifier.padding(horizontal = 16.dp),
-                enabled = value > 0,
+                enabled = value > 0 && canContinue,
                 haptic = if (kind.isRequest) HapticKind.Click else HapticKind.Heavy,
                 onClick = onContinue
             )
@@ -760,6 +821,67 @@ private fun SuccessStep(
     }
 }
 
+/** People you have paid before (with their PayPal email), newest first. */
+private fun txsForRecents(vm: SplitViewModel): List<Contact> =
+    vm.transactions.value
+        .filter { !it.isCredit && it.email.contains("@") }
+        .distinctBy { it.email.lowercase() }
+        .take(12)
+        .map { Contact(it.title, it.email) }
+
+@Composable
+private fun PayPalStep(
+    phase: PayPhase,
+    recipient: String,
+    isRequest: Boolean,
+    onCheck: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Column(
+        Modifier.fillMaxSize().navigationBarsPadding().padding(horizontal = 24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        when (phase) {
+            is PayPhase.Failed -> {
+                Text("Not completed", fontSize = 22.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(10.dp))
+                Text(phase.message, fontSize = 14.sp, color = Pal.Muted, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(28.dp))
+                CoralPill("Back", onClick = onCancel)
+            }
+            PayPhase.InBrowser -> {
+                CircularProgressIndicator(Modifier.size(56.dp), color = Pal.Coral, strokeWidth = 5.dp)
+                Spacer(Modifier.height(24.dp))
+                Text("Finish paying in PayPal", fontSize = 20.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Approve the payment to $recipient, then you'll return here automatically.",
+                    fontSize = 13.sp, color = Pal.Muted, textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(28.dp))
+                OutlinePill("I've paid — check status", onClick = onCheck)
+                Spacer(Modifier.height(10.dp))
+                OutlinePill("Cancel", onClick = onCancel, compact = true)
+            }
+            else -> {
+                CircularProgressIndicator(Modifier.size(64.dp), color = Pal.Coral, strokeWidth = 5.dp)
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    when {
+                        phase == PayPhase.Confirming -> "Confirming with PayPal…"
+                        isRequest -> "Creating your payment link…"
+                        else -> "Contacting PayPal…"
+                    },
+                    fontSize = 20.sp
+                )
+                Spacer(Modifier.height(6.dp))
+                Text("Please don't close the app", fontSize = 13.sp, color = Pal.Muted)
+            }
+        }
+    }
+}
+
 /* ═════════════════════════════ SCAN & MY QR ═════════════════════════════ */
 
 @Composable
@@ -769,7 +891,7 @@ fun ScanScreen(nav: Navigator) {
     var torch by remember { mutableStateOf(false) }
     var customPayPayload by remember { mutableStateOf<String?>(null) }
     var isPaying by remember { mutableStateOf(false) }
-    val upiId = "shreyan@payrajpal"
+    val myQr = payQrPayload(Session.name.ifBlank { Session.email }, Session.email)
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -793,7 +915,14 @@ fun ScanScreen(nav: Navigator) {
         val cleanValue = qrData.trim()
         if (cleanValue.isBlank()) return
 
-        if (cleanValue.startsWith("upi://pay", ignoreCase = true)) {
+        if (cleanValue.startsWith("payrajpal://pay", ignoreCase = true)) {
+            // A PayRajpal QR: open the pay screen with the person already filled in.
+            val u = Uri.parse(cleanValue)
+            val email = u.getQueryParameter("e").orEmpty()
+            val name = u.getQueryParameter("n").orEmpty().ifBlank { email }
+            if (email.contains("@")) nav.replace(Route.Pay(PayKind.PAY, name, email))
+            else toast(context, "This QR code is not valid")
+        } else if (cleanValue.startsWith("upi://pay", ignoreCase = true)) {
             try {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(cleanValue))
                 val chooser = Intent.createChooser(intent, "Pay with")
@@ -811,7 +940,7 @@ fun ScanScreen(nav: Navigator) {
                 toast(context, "Unable to open payment link")
             }
         } else {
-            customPayPayload = cleanValue
+            toast(context, "Not a PayRajpal QR code")
         }
     }
 
@@ -856,9 +985,11 @@ fun ScanScreen(nav: Navigator) {
                     )
                 } else {
                     MyQrTab(
-                        upiId = upiId,
-                        onCopy = { copyText(context, "UPI ID", upiId) },
-                        onShare = { shareText(context, "Pay me on PayRajpal: $upiId") }
+                        name = Session.name,
+                        email = Session.email,
+                        payload = myQr,
+                        onCopy = { copyText(context, "PayPal email", Session.email) },
+                        onShare = { shareText(context, "Pay me on PayRajpal (PayPal): ${Session.email}") }
                     )
                 }
             }
@@ -866,9 +997,9 @@ fun ScanScreen(nav: Navigator) {
         PinnedCta {
             if (tab == 0) {
                 CoralPill(
-                    title = "Simulate scan",
-                    subtitle = "Demo until the camera scanner is wired up",
-                    onClick = { nav.replace(Route.Pay(PayKind.PAY, "Starbucks CyberHub")) }
+                    title = "Pay by PayPal email",
+                    subtitle = "No QR? Type their email instead",
+                    onClick = { nav.replace(Route.Pay(PayKind.PAY)) }
                 )
             } else {
                 CoralPill(
@@ -951,14 +1082,14 @@ private fun ScanTab(
 }
 
 @Composable
-private fun MyQrTab(upiId: String, onCopy: () -> Unit, onShare: () -> Unit) {
+private fun MyQrTab(name: String, email: String, payload: String, onCopy: () -> Unit, onShare: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.clip(RoundedCornerShape(36.dp)).background(Color.White).padding(22.dp)) {
-            FakeQr(Modifier.size(210.dp))
+            RealQr(payload, Modifier.size(210.dp))
         }
         Spacer(Modifier.height(16.dp))
-        Text("Shreyan", fontSize = 22.sp, fontWeight = FontWeight.Medium)
-        Text(upiId, fontSize = 14.sp, color = Pal.Muted)
+        Text(name.ifBlank { "You" }, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Text(email, fontSize = 14.sp, color = Pal.Muted)
         Spacer(Modifier.height(16.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinePill("Copy ID", onClick = onCopy, icon = Icons.Outlined.ContentCopy)

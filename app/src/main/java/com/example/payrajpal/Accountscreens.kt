@@ -1055,17 +1055,17 @@ fun SecurityScreen(ui: PayUiViewModel, nav: Navigator) {
         item {
             StackCard(color = Pal.Surface) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AvatarCircle("Shreyan", 60.dp)
+                    AvatarCircle(Session.name.ifBlank { "You" }, 60.dp)
                     Spacer(Modifier.width(16.dp))
                     Column {
-                        Text("Shreyan", fontSize = 22.sp, fontWeight = FontWeight.Medium)
-                        Text("shreyan@payrajpal", fontSize = 14.sp, color = Pal.Ink.copy(alpha = 0.6f))
+                        Text(Session.name.ifBlank { "You" }, fontSize = 22.sp, fontWeight = FontWeight.Medium)
+                        Text(Session.email, fontSize = 14.sp, color = Pal.Ink.copy(alpha = 0.6f))
                     }
                 }
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusChip("PayPal verified", container = Pal.Green)
-                    OutlinePill("Copy UPI ID", onClick = { copyText(context, "UPI ID", "shreyan@payrajpal") }, compact = true)
+                    OutlinePill("Copy PayPal email", onClick = { copyText(context, "PayPal email", Session.email) }, compact = true)
                 }
             }
         }
@@ -1119,7 +1119,7 @@ fun SecurityScreen(ui: PayUiViewModel, nav: Navigator) {
                 SmallCaps("Support")
                 Spacer(Modifier.height(6.dp))
                 ActionRow(Icons.Outlined.Help, "Help & support", "FAQs and chat", soon)
-                ActionRow(Icons.Outlined.ExitToApp, "Log out", "Sign out of this device", soon)
+                ActionRow(Icons.Outlined.ExitToApp, "Log out", "Sign out of this device", { Session.logout() })
             }
         }
     }

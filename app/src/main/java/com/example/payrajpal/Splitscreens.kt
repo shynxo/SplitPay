@@ -657,10 +657,10 @@ fun AddMemberDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> Un
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 PayTextField(name, { name = it }, "Name")
                 PayTextField(contact, { contact = it }, "Phone or contact")
-                PayTextField(email, { email = it }, "Email (optional)")
+                PayTextField(email, { email = it }, "Friend's PayPal email", keyboardType = KeyboardType.Email)
             }
         },
-        confirmButton = { TextButton(onClick = { onAdd(name, contact, email) }) { Text("Add", color = Pal.CoralDeep) } },
+        confirmButton = { TextButton(onClick = { if (name.isNotBlank() && email.contains("@")) onAdd(name, contact, email) }) { Text("Add", color = Pal.CoralDeep) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Pal.Ink) } }
     )
 }

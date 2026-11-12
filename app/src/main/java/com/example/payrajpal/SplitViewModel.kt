@@ -39,24 +39,16 @@ class SplitViewModel : ViewModel() {
     }
 
     private fun loadMockData() {
-        _banks.value = listOf(
-            BankAccount(bankName = "HDFC Bank •• 4821", accountNumberLast4 = "4821", balance = 24850.0, isPrimary = true),
-            BankAccount(bankName = "SBI Savings •• 9012", accountNumberLast4 = "9012", balance = 8420.50, isPrimary = false)
-        )
-
-        _transactions.value = listOf(
-            Transaction(title = "Aarav Sharma", subtitle = "Paid via PayPal / UPI", amount = 450.0, timestamp = "Today, 4:15 PM", isCredit = false),
-            Transaction(title = "Riya Verma", subtitle = "Split Bill Settlement", amount = 620.0, timestamp = "Yesterday, 9:30 PM", isCredit = true),
-            Transaction(title = "Third Wave Coffee", subtitle = "Scanned QR Payment", amount = 340.0, timestamp = "Nov 8, 11:20 AM", isCredit = false),
-            Transaction(title = "Kabir Singh", subtitle = "Bank Transfer", amount = 1200.0, timestamp = "Nov 6, 6:05 PM", isCredit = true)
-        )
+        // No fake bank accounts or transactions any more: history is loaded from the server after login.
+        _banks.value = emptyList()
+        _transactions.value = emptyList()
 
         // Fresh bill: only "You" is in the list. Friends are added with the + button, receipt items come from the scan.
         val m1 = Member(
             id = "m1",
             name = "You",
             contact = "you@payrajpal",
-            email = "sb-5myms53858328@personal.example.com",
+            email = "",
             status = PaymentStatus.PAID
         )
 
@@ -82,6 +74,18 @@ class SplitViewModel : ViewModel() {
                     it.copy(status = if (it.id == "m1") PaymentStatus.PAID else PaymentStatus.PENDING)
                 }
             )
+        }
+    }
+
+    /** Real payment history from the server. */
+    fun setTransactions(list: List<Transaction>) {
+        _transactions.value = list
+    }
+
+    /** "You" in a bill split = the logged-in PayPal account. */
+    fun setSelf(email: String) {
+        _session.update { cur ->
+            cur.copy(members = cur.members.map { if (it.id == "m1") it.copy(email = email, contact = email.ifBlank { "you" }) else it })
         }
     }
 
@@ -142,7 +146,7 @@ class SplitViewModel : ViewModel() {
         val trimmedEmail = email?.trim()?.ifBlank { null }
 
         val finalContact = trimmedContact.ifBlank { trimmedEmail ?: "" }
-        val finalEmail = trimmedEmail ?: if (trimmedContact.contains("@")) trimmedContact else "sb-5myms53858328@personal.example.com"
+        val finalEmail = trimmedEmail ?: if (trimmedContact.contains("@")) trimmedContact else ""
 
         val newMember = Member(
             id = java.util.UUID.randomUUID().toString(),

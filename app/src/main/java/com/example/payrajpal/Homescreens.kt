@@ -93,11 +93,12 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
     val txs by vm.transactions.collectAsState()
     val session by vm.session.collectAsState()
 
-    val primary = banks.find { it.isPrimary } ?: banks.firstOrNull()
-    val balance = primary?.balance.asDouble()
-    val spent = txs.filter { !it.isCredit }.sumOf { it.amount.asDouble() }
+    val monthStart = startOfMonth()
+    // PayPal doesn't let apps read a personal balance, so we show what flowed through PayRajpal this month.
+    val balance = txs.filter { it.isCredit && it.epochMillis >= monthStart }.sumOf { it.amount.asDouble() }
+    val spent = txs.filter { !it.isCredit && it.epochMillis >= monthStart }.sumOf { it.amount.asDouble() }
     val lastPay = txs.firstOrNull { !it.isCredit }
-    val activeAutopays = ui.autopays.count { it.active }
+    val sentCount = txs.count { !it.isCredit }
 
     var showBalance by remember { mutableStateOf(false) }
     var period by rememberSaveable { mutableIntStateOf(0) }
@@ -130,21 +131,22 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
             .dismissOnOutsideTap(active = scanExpanded, bounds = { scanBounds }, onDismiss = { scanExpanded = false })
     ) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 0.dp)) {
-            item { Reveal(0) { HomeHeader(onSettings = { nav.push(Route.Security) }) } }
+            item { Reveal(0) { HomeHeader(name = Session.name.substringBefore(" ").ifBlank { "there" }, onSettings = { nav.push(Route.Security) }) } }
             item {
                 Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
                     Reveal(1) {
                         BalanceCard(
-                            bankName = primary?.bankName ?: "No bank linked",
+                            bankName = "PayPal · ${Session.email}",
                             balance = balance,
                             showBalance = showBalance,
                             onToggleBalance = { showBalance = !showBalance },
                             spent = spent,
-                            autopays = activeAutopays,
+                            autopays = sentCount,
+                            txs = txs,
                             period = period,
                             onPeriod = { period = if (period == 0) 1 else 0 },
                             onAccounts = { nav.push(Route.Wallet) },
-                            onAutopays = { nav.push(Route.Autopays) }
+                            onAutopays = { nav.push(Route.History) }
                         )
                     }
                     Reveal(2) { QuickActionsCard(actions) }
@@ -184,16 +186,16 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
 }
 
 @Composable
-private fun HomeHeader(onSettings: () -> Unit) {
+private fun HomeHeader(name: String, onSettings: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AvatarCircle("Shreyan", 52.dp)
+        AvatarCircle(name, 52.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text("Welcome back,", fontSize = 13.sp)
-            Text("Shreyan", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+            Text(name, fontSize = 22.sp, fontWeight = FontWeight.Medium)
         }
         CircleIconButton(Icons.Outlined.Tune, "Settings", onSettings)
     }
@@ -210,29 +212,30 @@ private fun BalanceCard(
     period: Int,
     onPeriod: () -> Unit,
     onAccounts: () -> Unit,
-    onAutopays: () -> Unit
+    onAutopays: () -> Unit,
+    txs: List<Transaction>
 ) {
-    val chart = remember(period) { chartData(period) }
+    val chart = remember(period, txs) { chartData(period, txs) }
 
     StackCard(color = Pal.Surface) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                SmallCaps("Balance")
+                SmallCaps("PayPal wallet")
                 Text(bankName, fontSize = 13.sp, color = Pal.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            OutlinePill(if (showBalance) "Hide" else "Check balance", onClick = onToggleBalance, compact = true)
+            OutlinePill(if (showBalance) "Hide" else "Show received", onClick = onToggleBalance, compact = true)
             Spacer(Modifier.width(8.dp))
             CircleIconButton(Icons.Outlined.AccountBalance, "Accounts", onAccounts, dimension = 38.dp)
         }
 
         Spacer(Modifier.height(18.dp))
         BalanceNumber(balance, showBalance)
-        Text("Available balance", fontSize = 13.sp, color = Pal.Ink.copy(alpha = 0.6f))
+        Text("Received this month", fontSize = 13.sp, color = Pal.Ink.copy(alpha = 0.6f))
 
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(36.dp)) {
             Stat(money(spent), "Spent this month")
-            Stat("$autopays", "Active autopays", Modifier.bounceClick(onClick = onAutopays))
+            Stat("$autopays", "Payments sent", Modifier.bounceClick(onClick = onAutopays))
         }
 
         Spacer(Modifier.height(24.dp))
@@ -416,27 +419,39 @@ private fun MoreSheet(
 
 /* ───────────────────────────── SPENDING CHART ───────────────────────────── */
 
-private fun chartData(period: Int): Pair<List<Float>, List<String>> {
-    val cal = Calendar.getInstance()
+private fun startOfMonth(): Long = Calendar.getInstance().apply {
+    set(Calendar.DAY_OF_MONTH, 1); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+}.timeInMillis
+
+/** Real spending: money you sent through PayRajpal, per day (7 days) or per month (6 months). */
+private fun chartData(period: Int, txs: List<Transaction>): Pair<List<Float>, List<String>> {
+    val sent = txs.filter { !it.isCredit && it.epochMillis > 0 }
     val labels = ArrayList<String>()
-    return if (period == 0) {
+    val values = ArrayList<Float>()
+    val cal = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }
+    if (period == 0) {
         val fmt = SimpleDateFormat("EEE", Locale.getDefault())
         cal.add(Calendar.DAY_OF_YEAR, -6)
         repeat(7) {
-            labels.add(fmt.format(cal.time))
+            val from = cal.timeInMillis
             cal.add(Calendar.DAY_OF_YEAR, 1)
+            labels.add(fmt.format(java.util.Date(from)))
+            values.add(sent.filter { it.epochMillis in from until cal.timeInMillis }.sumOf { it.amount }.toFloat())
         }
-        // Demo rupee totals per day — replace with real data from the backend.
-        Pair(listOf(1450f, 780f, 3100f, 1800f, 3900f, 1300f, 2350f), labels)
     } else {
         val fmt = SimpleDateFormat("MMM", Locale.getDefault())
+        cal.set(Calendar.DAY_OF_MONTH, 1)
         cal.add(Calendar.MONTH, -5)
         repeat(6) {
-            labels.add(fmt.format(cal.time))
+            val from = cal.timeInMillis
             cal.add(Calendar.MONTH, 1)
+            labels.add(fmt.format(java.util.Date(from)))
+            values.add(sent.filter { it.epochMillis in from until cal.timeInMillis }.sumOf { it.amount }.toFloat())
         }
-        Pair(listOf(21400f, 26500f, 16200f, 34000f, 24800f, 30100f), labels)
     }
+    return Pair(values, labels)
 }
 
 /** Rounds the top of the axis up so the three labels (0, half, max) read cleanly. */

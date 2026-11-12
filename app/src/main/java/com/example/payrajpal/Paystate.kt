@@ -24,7 +24,7 @@ sealed interface Route {
     object Split : Route
     object Security : Route
     object Scan : Route
-    data class Pay(val kind: PayKind, val recipient: String = "") : Route
+    data class Pay(val kind: PayKind, val recipient: String = "", val email: String = "") : Route
 }
 
 /** Tiny back-stack. Lives in [PayUiViewModel] so it survives rotation. */
@@ -96,17 +96,6 @@ data class Autopay(
 class PayUiViewModel : ViewModel() {
 
     val nav = Navigator()
-
-    val contacts = listOf(
-        Contact("Aarav Mehta", "+91 98100 11001"),
-        Contact("Riya Kapoor", "+91 98100 11002"),
-        Contact("Kabir Singh", "+91 98100 11003"),
-        Contact("Neha Verma", "+91 98100 11004"),
-        Contact("Dev Malhotra", "+91 98100 11005"),
-        Contact("Rohan Gupta", "+91 98100 11006"),
-        Contact("Ananya Rao", "+91 98100 11007"),
-        Contact("Ishaan Joshi", "+91 98100 11008")
-    )
 
     val cards = mutableStateListOf(
         PayCard("c1", "VISA", "4242", "SHREYAN", "08/29", isCredit = false, isDefault = true),

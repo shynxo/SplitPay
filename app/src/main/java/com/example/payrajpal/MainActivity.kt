@@ -1,6 +1,8 @@
 package com.example.payrajpal
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -43,8 +45,26 @@ private const val PREFS = "payrajpal_prefs"
 private const val KEY_DARK = "dark_mode"
 
 class MainActivity : ComponentActivity() {
+
+    /** payrajpal://auth?token=…  (PayPal login)   ·   payrajpal://paypal/return?…  (finished paying) */
+    private fun handleLink(uri: Uri?) {
+        if (uri == null || uri.scheme != "payrajpal") return
+        when (uri.host) {
+            "auth" -> Session.onAuthLink(uri)
+            "paypal" -> PayPalPay.onReturnLink(uri)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleLink(intent.data)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Session.init(this)
+        if (savedInstanceState == null) handleLink(intent?.data)
 
         // Restore the saved theme before the first frame so there is no light→dark flash.
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -102,6 +122,16 @@ fun PayRajpalApp(
     var splash by rememberSaveable { mutableStateOf(true) }
     val nav = ui.nav
 
+    // Once logged in: "You" in bill splits = your PayPal email, and load your real payment history.
+    LaunchedEffect(Session.token, Session.email) {
+        if (Session.loggedIn) {
+            vm.setSelf(Session.email)
+            refreshHistory(vm)
+        } else {
+            vm.setTransactions(emptyList())
+        }
+    }
+
     BackHandler(enabled = !splash && nav.stack.size > 1) { nav.pop() }
 
     AnimatedContent(
@@ -111,6 +141,8 @@ fun PayRajpalApp(
     ) { showSplash ->
         if (showSplash) {
             SplashScreen(onStart = { splash = false }, lockEnabled = ui.appLock)
+        } else if (!Session.loggedIn) {
+            LoginScreen()
         } else {
             AppNav(vm, ui, nav)
         }
