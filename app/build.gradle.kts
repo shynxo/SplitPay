@@ -43,6 +43,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
     // Network & API calls
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.zxing:core:3.5.3") // real QR codes (My QR)
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")

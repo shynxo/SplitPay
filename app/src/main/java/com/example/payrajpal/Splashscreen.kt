@@ -83,9 +83,6 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** Demo PIN until real auth comes from the PayPal backend. */
-private const val DEMO_PIN = "1234"
-
 private class Blob(
     val color: Color,
     val alpha: Float,
@@ -130,7 +127,7 @@ fun SplashScreen(onStart: () -> Unit, lockEnabled: Boolean = true) {
     val haptics = LocalHaptics.current
     val scope = rememberCoroutineScope()
     val titles = remember {
-        listOf("Instant-pay", "Transfers", "Autopay", "Split-bills", "Contactless", "Cards", "Security", "Settle-up", "Pay.")
+        listOf("Instant-pay", "Requests", "Split-bills", "Scan-&-pay", "Security", "Settle-up", "Pay.")
     }
 
     // one loop, 24 s; every animated value below uses whole multiples of it so the seam is invisible
@@ -154,6 +151,7 @@ fun SplashScreen(onStart: () -> Unit, lockEnabled: Boolean = true) {
     var showPad by remember { mutableStateOf(false) }
     var pin by remember { mutableStateOf("") }
     var unlocked by remember { mutableStateOf(false) }
+    var pinNote by remember { mutableStateOf("") }
     val shake = remember { Animatable(0f) }
 
     val wordsAlpha = animateFloatAsState(if (showPad) 0.16f else 1f, tween(450), label = "wordsAlpha")
@@ -179,13 +177,14 @@ fun SplashScreen(onStart: () -> Unit, lockEnabled: Boolean = true) {
     LaunchedEffect(pin) {
         if (pin.length == 4) {
             delay(160)
-            if (pin == DEMO_PIN) {
+            if (PinStore.verify(pin)) {
                 unlocked = true
                 haptics.heavy()
                 delay(420)
                 onStart()
             } else {
                 haptics.heavy()
+                pinNote = PinStore.failureMessage()
                 repeat(3) {
                     shake.animateTo(18f, tween(45))
                     shake.animateTo(-18f, tween(45))
@@ -409,7 +408,7 @@ fun SplashScreen(onStart: () -> Unit, lockEnabled: Boolean = true) {
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            Text("Demo PIN 1234 · real auth comes with PayPal", fontSize = 12.sp, color = Pal.OnCoral.copy(alpha = 0.55f))
+                            Text(if (pinNote.isNotEmpty()) pinNote else "Enter your SplitPay PIN", fontSize = 12.sp, color = Pal.OnCoral.copy(alpha = 0.7f))
                             Spacer(Modifier.height(10.dp))
                             PayNumpad(showDot = false) { key ->
                                 if (!unlocked && pin.length < 4 || key == "⌫") {

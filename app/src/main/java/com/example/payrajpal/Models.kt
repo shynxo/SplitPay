@@ -20,7 +20,9 @@ data class Transaction(
     val subtitle: String,
     val amount: Double,
     val timestamp: String,
-    val isCredit: Boolean = false
+    val isCredit: Boolean = false,
+    val epochMillis: Long = 0L,
+    val email: String = ""
 )
 
 @Serializable
@@ -45,7 +47,7 @@ fun Member.resolvedEmail(): String {
     if (!e.isNullOrBlank()) return e
     val c = contact.trim()
     if (c.contains("@")) return c
-    return "sb-5myms53858328@personal.example.com"
+    return "" // no fake fallback: an invoice must go to a real address
 }
 
 @Serializable

@@ -89,19 +89,18 @@ private data class HomeAction(val icon: ImageVector, val label: String, val onCl
 
 @Composable
 fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
-    val banks by vm.banks.collectAsState()
     val txs by vm.transactions.collectAsState()
     val session by vm.session.collectAsState()
 
-    val primary = banks.find { it.isPrimary } ?: banks.firstOrNull()
-    val balance = primary?.balance.asDouble()
-    val spent = txs.filter { !it.isCredit }.sumOf { it.amount.asDouble() }
+    val monthStart = startOfMonth()
+    // PayPal doesn't let apps read a personal balance, so we show what flowed through SplitPay this month.
+    val balance = txs.filter { it.isCredit && it.epochMillis >= monthStart }.sumOf { it.amount.asDouble() }
+    val spent = txs.filter { !it.isCredit && it.epochMillis >= monthStart }.sumOf { it.amount.asDouble() }
     val lastPay = txs.firstOrNull { !it.isCredit }
-    val activeAutopays = ui.autopays.count { it.active }
+    val sentCount = txs.count { !it.isCredit }
 
     var showBalance by remember { mutableStateOf(false) }
     var period by rememberSaveable { mutableIntStateOf(0) }
-    var showMore by remember { mutableStateOf(false) }
     var scanExpanded by remember { mutableStateOf(false) }
     var scanBounds by remember { mutableStateOf(Rect.Zero) }
 
@@ -114,15 +113,14 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
     }
 
     val actions = listOf(
-        HomeAction(Icons.Outlined.Dialpad, "Pay phone") { nav.push(Route.Pay(PayKind.PAY)) },
-        HomeAction(Icons.Outlined.AccountBalance, "To bank") { nav.push(Route.Pay(PayKind.BANK)) },
+        HomeAction(Icons.Outlined.Dialpad, "Pay") { nav.push(Route.Pay(PayKind.PAY)) },
         HomeAction(Icons.Outlined.CallReceived, "Request") { nav.push(Route.Pay(PayKind.REQUEST)) },
-        HomeAction(Icons.Outlined.History, "History") { nav.push(Route.History) },
-        HomeAction(Icons.Outlined.Autorenew, "Autopay") { nav.push(Route.Autopays) },
-        HomeAction(Icons.Outlined.CreditCard, "Cards") { nav.push(Route.Wallet) },
-        HomeAction(Icons.Outlined.Contactless, "Tap to pay") { nav.push(Route.TapToPay) },
-        HomeAction(Icons.Outlined.MoreHoriz, "More") { showMore = true }
+        HomeAction(Icons.Outlined.AutoAwesome, "Split bill") { nav.push(Route.Split) },
+        HomeAction(Icons.Outlined.History, "Activity") { nav.push(Route.History) }
     )
+
+    // Pick up money other people paid you (request links) without needing a manual refresh.
+    AutoRefreshHistory(vm)
 
     Box(
         Modifier
@@ -130,21 +128,21 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
             .dismissOnOutsideTap(active = scanExpanded, bounds = { scanBounds }, onDismiss = { scanExpanded = false })
     ) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 0.dp)) {
-            item { Reveal(0) { HomeHeader(onSettings = { nav.push(Route.Security) }) } }
+            item { Reveal(0) { HomeHeader(name = Session.name.substringBefore(" ").ifBlank { "there" }, onSettings = { nav.push(Route.Security) }) } }
             item {
                 Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
                     Reveal(1) {
                         BalanceCard(
-                            bankName = primary?.bankName ?: "No bank linked",
+                            bankName = "PayPal · ${Session.email}",
                             balance = balance,
                             showBalance = showBalance,
                             onToggleBalance = { showBalance = !showBalance },
                             spent = spent,
-                            autopays = activeAutopays,
+                            sentCount = sentCount,
+                            txs = txs,
                             period = period,
                             onPeriod = { period = if (period == 0) 1 else 0 },
-                            onAccounts = { nav.push(Route.Wallet) },
-                            onAutopays = { nav.push(Route.Autopays) }
+                            onSent = { nav.push(Route.History) }
                         )
                     }
                     Reveal(2) { QuickActionsCard(actions) }
@@ -152,6 +150,7 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
                         SplitPromoCard(
                             members = session.members.map { it.name },
                             title = session.merchantName,
+                            hasBill = session.items.isNotEmpty(),
                             onClick = { nav.push(Route.Split) }
                         )
                     }
@@ -171,29 +170,19 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
             )
         }
     }
-
-    if (showMore) {
-        MoreSheet(
-            onDismiss = { showMore = false },
-            onBills = { showMore = false; nav.push(Route.Pay(PayKind.BILLS)) },
-            onRecharge = { showMore = false; nav.push(Route.Pay(PayKind.RECHARGE)) },
-            onSplit = { showMore = false; nav.push(Route.Split) },
-            onSecurity = { showMore = false; nav.push(Route.Security) }
-        )
-    }
 }
 
 @Composable
-private fun HomeHeader(onSettings: () -> Unit) {
+private fun HomeHeader(name: String, onSettings: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AvatarCircle("Shreyan", 52.dp)
+        AvatarCircle(name, 52.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text("Welcome back,", fontSize = 13.sp)
-            Text("Shreyan", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+            Text(name, fontSize = 22.sp, fontWeight = FontWeight.Medium)
         }
         CircleIconButton(Icons.Outlined.Tune, "Settings", onSettings)
     }
@@ -206,33 +195,31 @@ private fun BalanceCard(
     showBalance: Boolean,
     onToggleBalance: () -> Unit,
     spent: Double,
-    autopays: Int,
+    sentCount: Int,
     period: Int,
     onPeriod: () -> Unit,
-    onAccounts: () -> Unit,
-    onAutopays: () -> Unit
+    onSent: () -> Unit,
+    txs: List<Transaction>
 ) {
-    val chart = remember(period) { chartData(period) }
+    val chart = remember(period, txs) { chartData(period, txs) }
 
     StackCard(color = Pal.Surface) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                SmallCaps("Balance")
+                SmallCaps("PayPal wallet")
                 Text(bankName, fontSize = 13.sp, color = Pal.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            OutlinePill(if (showBalance) "Hide" else "Check balance", onClick = onToggleBalance, compact = true)
-            Spacer(Modifier.width(8.dp))
-            CircleIconButton(Icons.Outlined.AccountBalance, "Accounts", onAccounts, dimension = 38.dp)
+            OutlinePill(if (showBalance) "Hide" else "Show received", onClick = onToggleBalance, compact = true)
         }
 
         Spacer(Modifier.height(18.dp))
         BalanceNumber(balance, showBalance)
-        Text("Available balance", fontSize = 13.sp, color = Pal.Ink.copy(alpha = 0.6f))
+        Text("Received this month", fontSize = 13.sp, color = Pal.Ink.copy(alpha = 0.6f))
 
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(36.dp)) {
             Stat(money(spent), "Spent this month")
-            Stat("$autopays", "Active autopays", Modifier.bounceClick(onClick = onAutopays))
+            Stat("$sentCount", "Payments sent", Modifier.bounceClick(onClick = onSent))
         }
 
         Spacer(Modifier.height(24.dp))
@@ -317,26 +304,28 @@ private fun ActionTile(action: HomeAction, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SplitPromoCard(members: List<String>, title: String, onClick: () -> Unit) {
+private fun SplitPromoCard(members: List<String>, title: String, hasBill: Boolean, onClick: () -> Unit) {
     StackCard(color = Pal.Butter, onClick = onClick) {
         SmallCaps("AI bill split")
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${members.size}", fontSize = 44.sp)
-                    Spacer(Modifier.width(8.dp))
-                    Sparkle(26.dp, Pal.Coral, spin = true)
+        if (hasBill) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("${members.size}", fontSize = 44.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Sparkle(26.dp, Pal.Coral, spin = true)
+                    }
+                    Text(title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(horizontalAlignment = Alignment.End) {
+                    OverlapAvatars(members.take(5), 40.dp)
+                    Spacer(Modifier.height(6.dp))
+                    Text("In this split", fontSize = 13.sp)
+                }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                OverlapAvatars(members.take(5), 40.dp)
-                Spacer(Modifier.height(6.dp))
-                Text("In this split", fontSize = 13.sp)
-            }
+            Spacer(Modifier.height(18.dp))
         }
-        Spacer(Modifier.height(18.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.size(48.dp).clip(CircleShape).background(Pal.wash(0.5f)),
@@ -344,7 +333,8 @@ private fun SplitPromoCard(members: List<String>, title: String, onClick: () -> 
             ) { Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(22.dp)) }
             Spacer(Modifier.width(14.dp))
             Text(
-                "Snap the bill, tell Claude who ate what, and everyone gets their share to pay you.",
+                if (hasBill) "Continue your split: add friends and send each their share."
+                else "Snap a bill, say who ate what, and everyone gets their share to pay you.",
                 fontSize = 15.sp,
                 lineHeight = 20.sp
             )
@@ -360,6 +350,14 @@ private fun RecentCard(txs: List<Transaction>, onSeeAll: () -> Unit) {
             OutlinePill("See all", onClick = onSeeAll, compact = true)
         }
         Spacer(Modifier.height(8.dp))
+        if (txs.isEmpty()) {
+            Text(
+                "No payments yet. Pay someone or send a request and it will show up here.",
+                fontSize = 14.sp,
+                color = Pal.Ink.copy(alpha = 0.6f),
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
+        }
         txs.forEach { tx ->
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 WhiteBadge(
@@ -388,55 +386,41 @@ private fun RecentCard(txs: List<Transaction>, onSeeAll: () -> Unit) {
     }
 }
 
-@Composable
-private fun MoreSheet(
-    onDismiss: () -> Unit,
-    onBills: () -> Unit,
-    onRecharge: () -> Unit,
-    onSplit: () -> Unit,
-    onSecurity: () -> Unit
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Pal.Bg,
-        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp)
-    ) {
-        Column(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp).padding(bottom = 24.dp)
-        ) {
-            Text("More", fontSize = 24.sp)
-            Spacer(Modifier.height(8.dp))
-            ActionRow(Icons.Outlined.Receipt, "Pay bills", "Electricity, water, gas, broadband", onBills)
-            ActionRow(Icons.Outlined.PhoneAndroid, "Mobile recharge", "Prepaid and postpaid", onRecharge)
-            ActionRow(Icons.Outlined.AutoAwesome, "AI bill split", "Scan a receipt and split it", onSplit)
-            ActionRow(Icons.Outlined.Security, "Security & limits", "App lock, daily limit, PIN", onSecurity)
-        }
-    }
-}
-
 /* ───────────────────────────── SPENDING CHART ───────────────────────────── */
 
-private fun chartData(period: Int): Pair<List<Float>, List<String>> {
-    val cal = Calendar.getInstance()
+private fun startOfMonth(): Long = Calendar.getInstance().apply {
+    set(Calendar.DAY_OF_MONTH, 1); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+}.timeInMillis
+
+/** Real spending: money you sent through SplitPay, per day (7 days) or per month (6 months). */
+private fun chartData(period: Int, txs: List<Transaction>): Pair<List<Float>, List<String>> {
+    val sent = txs.filter { !it.isCredit && it.epochMillis > 0 }
     val labels = ArrayList<String>()
-    return if (period == 0) {
+    val values = ArrayList<Float>()
+    val cal = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }
+    if (period == 0) {
         val fmt = SimpleDateFormat("EEE", Locale.getDefault())
         cal.add(Calendar.DAY_OF_YEAR, -6)
         repeat(7) {
-            labels.add(fmt.format(cal.time))
+            val from = cal.timeInMillis
             cal.add(Calendar.DAY_OF_YEAR, 1)
+            labels.add(fmt.format(java.util.Date(from)))
+            values.add(sent.filter { it.epochMillis in from until cal.timeInMillis }.sumOf { it.amount }.toFloat())
         }
-        // Demo rupee totals per day — replace with real data from the backend.
-        Pair(listOf(1450f, 780f, 3100f, 1800f, 3900f, 1300f, 2350f), labels)
     } else {
         val fmt = SimpleDateFormat("MMM", Locale.getDefault())
+        cal.set(Calendar.DAY_OF_MONTH, 1)
         cal.add(Calendar.MONTH, -5)
         repeat(6) {
-            labels.add(fmt.format(cal.time))
+            val from = cal.timeInMillis
             cal.add(Calendar.MONTH, 1)
+            labels.add(fmt.format(java.util.Date(from)))
+            values.add(sent.filter { it.epochMillis in from until cal.timeInMillis }.sumOf { it.amount }.toFloat())
         }
-        Pair(listOf(21400f, 26500f, 16200f, 34000f, 24800f, 30100f), labels)
     }
+    return Pair(values, labels)
 }
 
 /** Rounds the top of the axis up so the three labels (0, half, max) read cleanly. */

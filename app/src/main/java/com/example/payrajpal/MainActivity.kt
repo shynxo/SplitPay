@@ -1,6 +1,8 @@
 package com.example.payrajpal
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -43,8 +45,33 @@ private const val PREFS = "payrajpal_prefs"
 private const val KEY_DARK = "dark_mode"
 
 class MainActivity : ComponentActivity() {
+
+    /** splitpay://auth?token=…  (PayPal login)   ·   splitpay://paypal/return?…  (finished paying) */
+    private fun handleLink(uri: Uri?) {
+        if (uri == null || uri.scheme != "splitpay" && uri.scheme != "payrajpal") return
+        when (uri.host) {
+            "auth" -> Session.onAuthLink(uri)
+            "paypal" -> PayPalPay.onReturnLink(uri)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        PayPalPay.onResume()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleLink(intent.data)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Session.init(this)
+        PinStore.init(this)
+        PayApi.warmUp()
+        if (savedInstanceState == null) handleLink(intent?.data)
 
         // Restore the saved theme before the first frame so there is no light→dark flash.
         val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -86,7 +113,7 @@ class MainActivity : ComponentActivity() {
             PayTheme {
                 CompositionLocalProvider(LocalHaptics provides haptics) {
                     Surface(modifier = Modifier.fillMaxSize(), color = Pal.Bg, contentColor = Pal.Ink) {
-                        PayRajpalApp()
+                        SplitPayApp()
                     }
                 }
             }
@@ -95,12 +122,22 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun PayRajpalApp(
+fun SplitPayApp(
     vm: SplitViewModel = viewModel(),
     ui: PayUiViewModel = viewModel()
 ) {
     var splash by rememberSaveable { mutableStateOf(true) }
     val nav = ui.nav
+
+    // Once logged in: "You" in bill splits = your PayPal email, and load your real payment history.
+    LaunchedEffect(Session.token, Session.email) {
+        if (Session.loggedIn) {
+            vm.setSelf(Session.email)
+            refreshHistory(vm)
+        } else {
+            vm.setTransactions(emptyList())
+        }
+    }
 
     BackHandler(enabled = !splash && nav.stack.size > 1) { nav.pop() }
 
@@ -110,7 +147,12 @@ fun PayRajpalApp(
         label = "splashGate"
     ) { showSplash ->
         if (showSplash) {
-            SplashScreen(onStart = { splash = false }, lockEnabled = ui.appLock)
+            SplashScreen(onStart = { splash = false }, lockEnabled = PinStore.lockOnOpen && PinStore.hasPin)
+        } else if (!Session.loggedIn) {
+            LoginScreen()
+        } else if (!PinStore.hasPin) {
+            // First time on this phone: make a PIN before anything else.
+            PinSetupScreen(change = false, onDone = { }, onBack = null)
         } else {
             AppNav(vm, ui, nav)
         }
@@ -149,12 +191,9 @@ private fun AppNav(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
                 when (route) {
                     Route.Home -> HomeScreen(vm, ui, nav)
                     Route.History -> HistoryScreen(vm, nav)
-                    Route.Autopays -> AutopayScreen(vm, ui, nav)
-                    Route.Wallet -> WalletScreen(vm, ui, nav)
-                    Route.AddCard -> AddCardScreen(ui, nav)
-                    Route.TapToPay -> TapToPayScreen(ui, nav)
                     Route.Split -> SplitScreen(vm, nav)
                     Route.Security -> SecurityScreen(ui, nav)
+                    Route.ChangePin -> PinSetupScreen(change = true, onDone = { nav.pop() }, onBack = { nav.pop() })
                     Route.Scan -> ScanScreen(nav)
                     is Route.Pay -> PayFlowScreen(route, vm, ui, nav)
                 }

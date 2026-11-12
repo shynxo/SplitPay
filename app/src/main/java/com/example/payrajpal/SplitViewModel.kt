@@ -10,9 +10,6 @@ import kotlin.math.roundToInt
 
 class SplitViewModel : ViewModel() {
 
-    private val _banks = MutableStateFlow<List<BankAccount>>(emptyList())
-    val banks: StateFlow<List<BankAccount>> = _banks.asStateFlow()
-
     private val _transactions = MutableStateFlow<List<Transaction>>(emptyList())
     val transactions: StateFlow<List<Transaction>> = _transactions.asStateFlow()
 
@@ -31,6 +28,11 @@ class SplitViewModel : ViewModel() {
     private val _serverBreakdowns = MutableStateFlow<Map<String, Double>>(emptyMap())
     val serverBreakdowns: StateFlow<Map<String, Double>> = _serverBreakdowns.asStateFlow()
 
+    private val _payLinks = MutableStateFlow<Map<String, String>>(emptyMap())
+    val payLinks: StateFlow<Map<String, String>> = _payLinks.asStateFlow()
+
+    fun setPayLinks(links: Map<String, String>) { _payLinks.value = links }
+
     private val _collectedAmount = MutableStateFlow<Double>(0.0)
     val collectedAmount: StateFlow<Double> = _collectedAmount.asStateFlow()
 
@@ -39,24 +41,15 @@ class SplitViewModel : ViewModel() {
     }
 
     private fun loadMockData() {
-        _banks.value = listOf(
-            BankAccount(bankName = "HDFC Bank •• 4821", accountNumberLast4 = "4821", balance = 24850.0, isPrimary = true),
-            BankAccount(bankName = "SBI Savings •• 9012", accountNumberLast4 = "9012", balance = 8420.50, isPrimary = false)
-        )
-
-        _transactions.value = listOf(
-            Transaction(title = "Aarav Sharma", subtitle = "Paid via PayPal / UPI", amount = 450.0, timestamp = "Today, 4:15 PM", isCredit = false),
-            Transaction(title = "Riya Verma", subtitle = "Split Bill Settlement", amount = 620.0, timestamp = "Yesterday, 9:30 PM", isCredit = true),
-            Transaction(title = "Third Wave Coffee", subtitle = "Scanned QR Payment", amount = 340.0, timestamp = "Nov 8, 11:20 AM", isCredit = false),
-            Transaction(title = "Kabir Singh", subtitle = "Bank Transfer", amount = 1200.0, timestamp = "Nov 6, 6:05 PM", isCredit = true)
-        )
+        // No fake bank accounts or transactions any more: history is loaded from the server after login.
+        _transactions.value = emptyList()
 
         // Fresh bill: only "You" is in the list. Friends are added with the + button, receipt items come from the scan.
         val m1 = Member(
             id = "m1",
             name = "You",
-            contact = "you@payrajpal",
-            email = "sb-5myms53858328@personal.example.com",
+            contact = "you",
+            email = "",
             status = PaymentStatus.PAID
         )
 
@@ -74,6 +67,7 @@ class SplitViewModel : ViewModel() {
     /** Forget any previously sent split so old amounts/statuses never leak into a new request. */
     private fun resetSendState() {
         _splitId.value = null
+        _payLinks.value = emptyMap()
         _serverBreakdowns.value = emptyMap()
         _collectedAmount.value = 0.0
         _session.update { cur ->
@@ -85,33 +79,15 @@ class SplitViewModel : ViewModel() {
         }
     }
 
-    fun addBankAccount(bankName: String, last4: String) {
-        if (bankName.isBlank() || last4.length < 4) return
-        val newBank = BankAccount(
-            bankName = "$bankName •• ${last4.takeLast(4)}",
-            accountNumberLast4 = last4.takeLast(4),
-            balance = 15000.0,
-            isPrimary = _banks.value.isEmpty()
-        )
-        _banks.update { it + newBank }
+    /** Real payment history from the server. */
+    fun setTransactions(list: List<Transaction>) {
+        _transactions.value = list
     }
 
-    fun setPrimaryBank(id: String) {
-        _banks.update { list -> list.map { it.copy(isPrimary = it.id == id) } }
-    }
-
-    fun sendDirectPayment(recipient: String, amount: Double, note: String) {
-        if (recipient.isBlank() || amount <= 0.0) return
-        val newTx = Transaction(
-            title = recipient.trim(),
-            subtitle = if (note.isBlank()) "Direct PayRajpal Transfer" else note.trim(),
-            amount = amount,
-            timestamp = "Just now",
-            isCredit = false
-        )
-        _transactions.update { listOf(newTx) + it }
-        _banks.update { list ->
-            list.map { if (it.isPrimary) it.copy(balance = (it.balance - amount).coerceAtLeast(0.0)) else it }
+    /** "You" in a bill split = the logged-in PayPal account. */
+    fun setSelf(email: String) {
+        _session.update { cur ->
+            cur.copy(members = cur.members.map { if (it.id == "m1") it.copy(email = email, contact = email.ifBlank { "you" }) else it })
         }
     }
 
@@ -142,7 +118,7 @@ class SplitViewModel : ViewModel() {
         val trimmedEmail = email?.trim()?.ifBlank { null }
 
         val finalContact = trimmedContact.ifBlank { trimmedEmail ?: "" }
-        val finalEmail = trimmedEmail ?: if (trimmedContact.contains("@")) trimmedContact else "sb-5myms53858328@personal.example.com"
+        val finalEmail = trimmedEmail ?: if (trimmedContact.contains("@")) trimmedContact else ""
 
         val newMember = Member(
             id = java.util.UUID.randomUUID().toString(),

@@ -16,17 +16,31 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PayRajPal">
+        android:theme="@style/Theme.SplitPay">
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:label="@string/app_name"
-            android:theme="@style/Theme.PayRajPal"
+            android:theme="@style/Theme.SplitPay"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Server → app: splitpay://auth?token=…  and  splitpay://paypal/return?… -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="splitpay" android:host="auth" />
+                <data android:scheme="payrajpal" android:host="auth" />
+                <data android:scheme="splitpay" android:host="paypal" />
+                <data android:scheme="payrajpal" android:host="paypal" />
             </intent-filter>
         </activity>
     </application>
