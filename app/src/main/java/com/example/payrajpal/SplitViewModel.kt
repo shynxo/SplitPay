@@ -10,9 +10,6 @@ import kotlin.math.roundToInt
 
 class SplitViewModel : ViewModel() {
 
-    private val _banks = MutableStateFlow<List<BankAccount>>(emptyList())
-    val banks: StateFlow<List<BankAccount>> = _banks.asStateFlow()
-
     private val _transactions = MutableStateFlow<List<Transaction>>(emptyList())
     val transactions: StateFlow<List<Transaction>> = _transactions.asStateFlow()
 
@@ -40,7 +37,6 @@ class SplitViewModel : ViewModel() {
 
     private fun loadMockData() {
         // No fake bank accounts or transactions any more: history is loaded from the server after login.
-        _banks.value = emptyList()
         _transactions.value = emptyList()
 
         // Fresh bill: only "You" is in the list. Friends are added with the + button, receipt items come from the scan.
@@ -86,36 +82,6 @@ class SplitViewModel : ViewModel() {
     fun setSelf(email: String) {
         _session.update { cur ->
             cur.copy(members = cur.members.map { if (it.id == "m1") it.copy(email = email, contact = email.ifBlank { "you" }) else it })
-        }
-    }
-
-    fun addBankAccount(bankName: String, last4: String) {
-        if (bankName.isBlank() || last4.length < 4) return
-        val newBank = BankAccount(
-            bankName = "$bankName •• ${last4.takeLast(4)}",
-            accountNumberLast4 = last4.takeLast(4),
-            balance = 15000.0,
-            isPrimary = _banks.value.isEmpty()
-        )
-        _banks.update { it + newBank }
-    }
-
-    fun setPrimaryBank(id: String) {
-        _banks.update { list -> list.map { it.copy(isPrimary = it.id == id) } }
-    }
-
-    fun sendDirectPayment(recipient: String, amount: Double, note: String) {
-        if (recipient.isBlank() || amount <= 0.0) return
-        val newTx = Transaction(
-            title = recipient.trim(),
-            subtitle = if (note.isBlank()) "Direct PayRajpal Transfer" else note.trim(),
-            amount = amount,
-            timestamp = "Just now",
-            isCredit = false
-        )
-        _transactions.update { listOf(newTx) + it }
-        _banks.update { list ->
-            list.map { if (it.isPrimary) it.copy(balance = (it.balance - amount).coerceAtLeast(0.0)) else it }
         }
     }
 

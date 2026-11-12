@@ -55,6 +55,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        PayPalPay.onResume()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -64,6 +69,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Session.init(this)
+        PinStore.init(this)
         if (savedInstanceState == null) handleLink(intent?.data)
 
         // Restore the saved theme before the first frame so there is no light→dark flash.
@@ -140,9 +146,12 @@ fun PayRajpalApp(
         label = "splashGate"
     ) { showSplash ->
         if (showSplash) {
-            SplashScreen(onStart = { splash = false }, lockEnabled = ui.appLock)
+            SplashScreen(onStart = { splash = false }, lockEnabled = PinStore.lockOnOpen && PinStore.hasPin)
         } else if (!Session.loggedIn) {
             LoginScreen()
+        } else if (!PinStore.hasPin) {
+            // First time on this phone: make a PIN before anything else.
+            PinSetupScreen(change = false, onDone = { }, onBack = null)
         } else {
             AppNav(vm, ui, nav)
         }
@@ -181,12 +190,9 @@ private fun AppNav(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
                 when (route) {
                     Route.Home -> HomeScreen(vm, ui, nav)
                     Route.History -> HistoryScreen(vm, nav)
-                    Route.Autopays -> AutopayScreen(vm, ui, nav)
-                    Route.Wallet -> WalletScreen(vm, ui, nav)
-                    Route.AddCard -> AddCardScreen(ui, nav)
-                    Route.TapToPay -> TapToPayScreen(ui, nav)
                     Route.Split -> SplitScreen(vm, nav)
                     Route.Security -> SecurityScreen(ui, nav)
+                    Route.ChangePin -> PinSetupScreen(change = true, onDone = { nav.pop() }, onBack = { nav.pop() })
                     Route.Scan -> ScanScreen(nav)
                     is Route.Pay -> PayFlowScreen(route, vm, ui, nav)
                 }

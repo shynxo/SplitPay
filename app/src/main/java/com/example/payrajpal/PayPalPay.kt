@@ -35,6 +35,10 @@ object PayPalPay {
     var phase by mutableStateOf<PayPhase>(PayPhase.Idle)
         private set
 
+    /** The most recent request link, kept so the success screen can show Share / Copy. */
+    var lastLink by mutableStateOf<String?>(null)
+        private set
+
     fun fail(message: String) { phase = PayPhase.Failed(message) }
     fun reset() { job?.cancel(); pendingId = null; phase = PayPhase.Idle }
 
@@ -57,9 +61,11 @@ object PayPalPay {
     fun request(context: Context, amountMinor: Long, note: String, message: (String) -> String) {
         if (phase == PayPhase.Creating) return
         phase = PayPhase.Creating
+        lastLink = null
         job = scope.launch {
             try {
                 val url = PayApi.createRequest(amountMinor, note)
+                lastLink = url
                 shareText(context, message(url))
                 phase = PayPhase.Done
             } catch (e: Exception) {
@@ -75,6 +81,9 @@ object PayPalPay {
         if (uri.getQueryParameter("status") == "cancelled") phase = PayPhase.Failed("Payment cancelled. No money was taken.")
         else confirm(pid)
     }
+
+    /** Back in the app after PayPal's page: check the result without making the user tap anything. */
+    fun onResume() { if (phase == PayPhase.InBrowser) check() }
 
     /** The "I've paid — check status" button. */
     fun check() { pendingId?.let { confirm(it) } }

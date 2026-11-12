@@ -124,24 +124,7 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
                     }
                 }
             } else {
-                delay(800)
-                if (uri == null) {
-                    // "Use sample bill" button: load a built-in bill so the demo works without a photo
-                    vm.updateReceiptFromBackend(
-                        billId = "",
-                        merchantName = "Cyber Hub Bistro",
-                        items = listOf(
-                            ReceiptItem(name = "Truffle Mushroom Pizza", price = 650.0),
-                            ReceiptItem(name = "Peri Peri Fries", price = 280.0),
-                            ReceiptItem(name = "Iced Matcha Latte", price = 320.0),
-                            ReceiptItem(name = "Classic Smash Burger", price = 490.0)
-                        ),
-                        tax = 145.0,
-                        service = 0.0,
-                        tip = 100.0
-                    )
-                    step = 1
-                }
+                Toast.makeText(context, "Pick a photo of the bill first", Toast.LENGTH_SHORT).show()
                 scanning = false
             }
         }
@@ -224,11 +207,7 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
                         session = session,
                         receiptUri = receiptUri,
                         scanning = scanning,
-                        onUpload = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        onSample = {
-                            vm.setReceiptImage(null)
-                            scanning = true
-                        }
+                        onUpload = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
                     )
                     1 -> AssignStep(
                         session = session,
@@ -274,8 +253,7 @@ private fun ReceiptStep(
     session: BillSplitSession,
     receiptUri: android.net.Uri?,
     scanning: Boolean,
-    onUpload: () -> Unit,
-    onSample: () -> Unit
+    onUpload: () -> Unit
 ) {
     val overlayAlpha by animateFloatAsState(if (scanning) 1f else 0f, tween(300), label = "scanAlpha")
     val transition = rememberInfiniteTransition(label = "receiptScan")
@@ -357,9 +335,6 @@ private fun ReceiptStep(
                 }
                 DetailRow("Tip", money(session.tip.asDouble()))
             }
-        }
-        item {
-            OutlinePill("Use sample bill", onClick = onSample, icon = Icons.Outlined.AutoAwesome)
         }
     }
 }

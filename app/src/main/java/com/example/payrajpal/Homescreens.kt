@@ -89,7 +89,6 @@ private data class HomeAction(val icon: ImageVector, val label: String, val onCl
 
 @Composable
 fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
-    val banks by vm.banks.collectAsState()
     val txs by vm.transactions.collectAsState()
     val session by vm.session.collectAsState()
 
@@ -102,7 +101,6 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
 
     var showBalance by remember { mutableStateOf(false) }
     var period by rememberSaveable { mutableIntStateOf(0) }
-    var showMore by remember { mutableStateOf(false) }
     var scanExpanded by remember { mutableStateOf(false) }
     var scanBounds by remember { mutableStateOf(Rect.Zero) }
 
@@ -115,15 +113,14 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
     }
 
     val actions = listOf(
-        HomeAction(Icons.Outlined.Dialpad, "Pay phone") { nav.push(Route.Pay(PayKind.PAY)) },
-        HomeAction(Icons.Outlined.AccountBalance, "To bank") { nav.push(Route.Pay(PayKind.BANK)) },
+        HomeAction(Icons.Outlined.Dialpad, "Pay") { nav.push(Route.Pay(PayKind.PAY)) },
         HomeAction(Icons.Outlined.CallReceived, "Request") { nav.push(Route.Pay(PayKind.REQUEST)) },
-        HomeAction(Icons.Outlined.History, "History") { nav.push(Route.History) },
-        HomeAction(Icons.Outlined.Autorenew, "Autopay") { nav.push(Route.Autopays) },
-        HomeAction(Icons.Outlined.CreditCard, "Cards") { nav.push(Route.Wallet) },
-        HomeAction(Icons.Outlined.Contactless, "Tap to pay") { nav.push(Route.TapToPay) },
-        HomeAction(Icons.Outlined.MoreHoriz, "More") { showMore = true }
+        HomeAction(Icons.Outlined.AutoAwesome, "Split bill") { nav.push(Route.Split) },
+        HomeAction(Icons.Outlined.History, "Activity") { nav.push(Route.History) }
     )
+
+    // Pick up money other people paid you (request links) without needing a manual refresh.
+    AutoRefreshHistory(vm)
 
     Box(
         Modifier
@@ -141,12 +138,11 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
                             showBalance = showBalance,
                             onToggleBalance = { showBalance = !showBalance },
                             spent = spent,
-                            autopays = sentCount,
+                            sentCount = sentCount,
                             txs = txs,
                             period = period,
                             onPeriod = { period = if (period == 0) 1 else 0 },
-                            onAccounts = { nav.push(Route.Wallet) },
-                            onAutopays = { nav.push(Route.History) }
+                            onSent = { nav.push(Route.History) }
                         )
                     }
                     Reveal(2) { QuickActionsCard(actions) }
@@ -154,6 +150,7 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
                         SplitPromoCard(
                             members = session.members.map { it.name },
                             title = session.merchantName,
+                            hasBill = session.items.isNotEmpty(),
                             onClick = { nav.push(Route.Split) }
                         )
                     }
@@ -172,16 +169,6 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
                 onClick = { nav.push(Route.Scan) }
             )
         }
-    }
-
-    if (showMore) {
-        MoreSheet(
-            onDismiss = { showMore = false },
-            onBills = { showMore = false; nav.push(Route.Pay(PayKind.BILLS)) },
-            onRecharge = { showMore = false; nav.push(Route.Pay(PayKind.RECHARGE)) },
-            onSplit = { showMore = false; nav.push(Route.Split) },
-            onSecurity = { showMore = false; nav.push(Route.Security) }
-        )
     }
 }
 
@@ -208,11 +195,10 @@ private fun BalanceCard(
     showBalance: Boolean,
     onToggleBalance: () -> Unit,
     spent: Double,
-    autopays: Int,
+    sentCount: Int,
     period: Int,
     onPeriod: () -> Unit,
-    onAccounts: () -> Unit,
-    onAutopays: () -> Unit,
+    onSent: () -> Unit,
     txs: List<Transaction>
 ) {
     val chart = remember(period, txs) { chartData(period, txs) }
@@ -224,8 +210,6 @@ private fun BalanceCard(
                 Text(bankName, fontSize = 13.sp, color = Pal.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinePill(if (showBalance) "Hide" else "Show received", onClick = onToggleBalance, compact = true)
-            Spacer(Modifier.width(8.dp))
-            CircleIconButton(Icons.Outlined.AccountBalance, "Accounts", onAccounts, dimension = 38.dp)
         }
 
         Spacer(Modifier.height(18.dp))
@@ -235,7 +219,7 @@ private fun BalanceCard(
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(36.dp)) {
             Stat(money(spent), "Spent this month")
-            Stat("$autopays", "Payments sent", Modifier.bounceClick(onClick = onAutopays))
+            Stat("$sentCount", "Payments sent", Modifier.bounceClick(onClick = onSent))
         }
 
         Spacer(Modifier.height(24.dp))
@@ -320,26 +304,28 @@ private fun ActionTile(action: HomeAction, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SplitPromoCard(members: List<String>, title: String, onClick: () -> Unit) {
+private fun SplitPromoCard(members: List<String>, title: String, hasBill: Boolean, onClick: () -> Unit) {
     StackCard(color = Pal.Butter, onClick = onClick) {
         SmallCaps("AI bill split")
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${members.size}", fontSize = 44.sp)
-                    Spacer(Modifier.width(8.dp))
-                    Sparkle(26.dp, Pal.Coral, spin = true)
+        if (hasBill) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("${members.size}", fontSize = 44.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Sparkle(26.dp, Pal.Coral, spin = true)
+                    }
+                    Text(title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Text(title, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(horizontalAlignment = Alignment.End) {
+                    OverlapAvatars(members.take(5), 40.dp)
+                    Spacer(Modifier.height(6.dp))
+                    Text("In this split", fontSize = 13.sp)
+                }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                OverlapAvatars(members.take(5), 40.dp)
-                Spacer(Modifier.height(6.dp))
-                Text("In this split", fontSize = 13.sp)
-            }
+            Spacer(Modifier.height(18.dp))
         }
-        Spacer(Modifier.height(18.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.size(48.dp).clip(CircleShape).background(Pal.wash(0.5f)),
@@ -347,7 +333,8 @@ private fun SplitPromoCard(members: List<String>, title: String, onClick: () -> 
             ) { Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(22.dp)) }
             Spacer(Modifier.width(14.dp))
             Text(
-                "Snap the bill, tell Claude who ate what, and everyone gets their share to pay you.",
+                if (hasBill) "Continue your split: add friends and send each their share."
+                else "Snap a bill, say who ate what, and everyone gets their share to pay you.",
                 fontSize = 15.sp,
                 lineHeight = 20.sp
             )
@@ -363,6 +350,14 @@ private fun RecentCard(txs: List<Transaction>, onSeeAll: () -> Unit) {
             OutlinePill("See all", onClick = onSeeAll, compact = true)
         }
         Spacer(Modifier.height(8.dp))
+        if (txs.isEmpty()) {
+            Text(
+                "No payments yet. Pay someone or send a request and it will show up here.",
+                fontSize = 14.sp,
+                color = Pal.Ink.copy(alpha = 0.6f),
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
+        }
         txs.forEach { tx ->
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 WhiteBadge(
@@ -387,32 +382,6 @@ private fun RecentCard(txs: List<Transaction>, onSeeAll: () -> Unit) {
                     fontWeight = FontWeight.SemiBold
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun MoreSheet(
-    onDismiss: () -> Unit,
-    onBills: () -> Unit,
-    onRecharge: () -> Unit,
-    onSplit: () -> Unit,
-    onSecurity: () -> Unit
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = Pal.Bg,
-        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp)
-    ) {
-        Column(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp).padding(bottom = 24.dp)
-        ) {
-            Text("More", fontSize = 24.sp)
-            Spacer(Modifier.height(8.dp))
-            ActionRow(Icons.Outlined.Receipt, "Pay bills", "Electricity, water, gas, broadband", onBills)
-            ActionRow(Icons.Outlined.PhoneAndroid, "Mobile recharge", "Prepaid and postpaid", onRecharge)
-            ActionRow(Icons.Outlined.AutoAwesome, "AI bill split", "Scan a receipt and split it", onSplit)
-            ActionRow(Icons.Outlined.Security, "Security & limits", "App lock, daily limit, PIN", onSecurity)
         }
     }
 }

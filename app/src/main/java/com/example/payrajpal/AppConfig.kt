@@ -7,5 +7,5 @@ package com.example.payrajpal
  * Bill scanning / splitting keeps using your friend's server (BackendService in backend.kt).
  */
 object AppConfig {
-    const val SERVER_URL = "https://splitpay-backend-bzkh.onrender.com"
+    const val SERVER_URL = "https://YOUR-SERVER.onrender.com"
 }

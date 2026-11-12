@@ -83,6 +83,7 @@ object Session {
         name = ""
         email = ""
         prefs?.edit()?.clear()?.apply()
+        PinStore.clear()
         if (old != null) scope.launch { try { PayApi.logout(old) } catch (_: Exception) { } }
     }
 }
@@ -112,7 +113,13 @@ object PayApi {
                         withContext(Dispatchers.Main) { Session.logout() }
                         throw ApiException("Please log in again")
                     }
-                    if (!res.isSuccessful) throw ApiException(json.optString("error").ifBlank { "Server error (${res.code})" })
+                    if (!res.isSuccessful) {
+                        val msg = json.optString("error")
+                        if (msg.isNotBlank()) throw ApiException(msg)
+                        // Render answers 404/502/503 with a plain page while the free server is waking up or redeploying.
+                        if (res.code in listOf(404, 502, 503, 504)) throw ApiException("The server is waking up. Wait a minute and try again.")
+                        throw ApiException("Server error (${res.code})")
+                    }
                     json
                 }
             } catch (e: IOException) {
@@ -162,6 +169,17 @@ object PayApi {
 suspend fun refreshHistory(vm: SplitViewModel) {
     if (!Session.loggedIn) return
     try { vm.setTransactions(PayApi.history()) } catch (_: Exception) { /* keep what we have */ }
+}
+
+/** Keeps the payment list fresh while a screen is showing (picks up money people paid you). */
+@androidx.compose.runtime.Composable
+fun AutoRefreshHistory(vm: SplitViewModel, everyMs: Long = 12_000L) {
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            refreshHistory(vm)
+            kotlinx.coroutines.delay(everyMs)
+        }
+    }
 }
 
 fun friendlyTime(epochMillis: Long): String {

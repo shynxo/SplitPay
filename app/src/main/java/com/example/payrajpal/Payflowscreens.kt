@@ -116,21 +116,22 @@ import java.util.Locale
 import kotlin.random.Random
 
 /* ═════════════════════════════ PAY FLOW ═════════════════════════════
- * Steps: 0 recipient · 1 amount · 2 PIN · 3 processing · 4 success
- * Requests skip the PIN (no money leaves the account).
+ * Steps: 0 recipient · 1 amount · 2 PIN · 3 PayPal · 4 success
+ * Requests skip the recipient step (the link works for anyone) and the PIN (no money leaves the account).
  */
 
 @Composable
 fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
     val kind = route.kind
-    val banks by vm.banks.collectAsState()
+    val skipsContact = route.recipient.isNotBlank() || kind.isRequest
 
-    var step by rememberSaveable { mutableIntStateOf(if (route.recipient.isNotBlank()) 1 else 0) }
-    var recipient by rememberSaveable { mutableStateOf(route.recipient) }
-    var detail by rememberSaveable { mutableStateOf(route.email) }
+    var step by rememberSaveable { mutableIntStateOf(if (skipsContact) 1 else 0) }
+    var recipient by rememberSaveable { mutableStateOf(if (kind.isRequest) "Payment link" else route.recipient) }
+    var detail by rememberSaveable { mutableStateOf(if (kind.isRequest) "Anyone with the link can pay you" else route.email) }
     var amount by rememberSaveable { mutableStateOf("") }
     var note by rememberSaveable { mutableStateOf("") }
     var sourceIndex by rememberSaveable { mutableIntStateOf(0) }
+    var pinMessage by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") } // deliberately NOT saved
     var paypalEmail by rememberSaveable { mutableStateOf("") }
     val haptics = LocalHaptics.current
@@ -142,7 +143,6 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
     val knownEmail = if (detail.contains("@")) detail.trim() else ""
     val targetEmail = knownEmail.ifBlank { paypalEmail.trim() }
     val emailOk = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(targetEmail)
-    val refId = rememberSaveable { "PRP" + (100000000..999999999).random() }
     val paidAt = remember { SimpleDateFormat("d MMM yyyy, h:mm a", Locale.getDefault()).format(Date()) }
 
     val sources = listOf("PayPal · ${Session.email}")
@@ -152,7 +152,7 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
 
     BackHandler(enabled = step in 1..2) {
         pin = ""
-        if (step == 1 && route.recipient.isNotBlank()) nav.pop() else step -= 1
+        if (step == 1 && skipsContact) nav.pop() else step -= 1
     }
     BackHandler(enabled = step == 3) {
         // While PayPal is open or has failed the user may back out; otherwise wait for the result.
@@ -166,7 +166,14 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
     LaunchedEffect(pin) {
         if (pin.length == 4) {
             delay(200)
-            step = 3
+            if (PinStore.verify(pin)) {
+                pinMessage = ""
+                step = 3
+            } else {
+                haptics.heavy()
+                pinMessage = PinStore.failureMessage()
+                pin = ""
+            }
         }
     }
     LaunchedEffect(step) {
@@ -180,10 +187,6 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
                 PayPalPay.request(context, Math.round(amountValue * 100), note) { url ->
                     "Please pay me ${money(amountValue)} on PayRajpal: $url"
                 }
-            } else {
-                delay(1700) // demo screens (bank / recharge / bills)
-                step = 4
-                haptics.heavy()
             }
         }
     }
@@ -212,32 +215,12 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
     ) { s ->
         Box(Modifier.fillMaxSize().background(Pal.Bg)) {
             when (s) {
-                0 -> when (kind) {
-                    PayKind.PAY, PayKind.REQUEST -> ContactStep(kind, recents, onBack = { nav.pop() }, onPick = { name, d, preset ->
-                        recipient = name
-                        detail = d
-                        if (preset.isNotEmpty()) amount = preset
-                        step = 1
-                    })
-                    PayKind.BANK -> BankFormStep(kind, onBack = { nav.pop() }, onPick = { name, d, preset ->
-                        recipient = name
-                        detail = d
-                        if (preset.isNotEmpty()) amount = preset
-                        step = 1
-                    })
-                    PayKind.RECHARGE -> RechargeStep(kind, onBack = { nav.pop() }, onPick = { name, d, preset ->
-                        recipient = name
-                        detail = d
-                        if (preset.isNotEmpty()) amount = preset
-                        step = 1
-                    })
-                    PayKind.BILLS -> BillStep(kind, onBack = { nav.pop() }, onPick = { name, d, preset ->
-                        recipient = name
-                        detail = d
-                        if (preset.isNotEmpty()) amount = preset
-                        step = 1
-                    })
-                }
+                0 -> ContactStep(kind, recents, onBack = { nav.pop() }, onPick = { name, d, preset ->
+                    recipient = name
+                    detail = d
+                    if (preset.isNotEmpty()) amount = preset
+                    step = 1
+                })
                 1 -> AmountStep(
                     kind = kind,
                     recipient = recipient,
@@ -249,7 +232,7 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
                     sources = sources,
                     sourceIndex = sourceIndex,
                     onSource = { sourceIndex = it },
-                    onBack = { if (route.recipient.isNotBlank()) nav.pop() else step = 0 },
+                    onBack = { if (skipsContact) nav.pop() else step = 0 },
                     needEmail = kind == PayKind.PAY && knownEmail.isBlank(),
                     email = paypalEmail,
                     onEmail = { paypalEmail = it },
@@ -264,13 +247,14 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
                     amount = amountValue,
                     source = sourceLabel,
                     pin = pin,
+                    message = pinMessage,
                     onKey = { key -> pin = if (key == "⌫") pin.dropLast(1) else if (pin.length < 4) pin + key else pin },
                     onBack = {
                         pin = ""
                         step = 1
                     }
                 )
-                3 -> if (usesPayPal) PayPalStep(
+                3 -> PayPalStep(
                     phase = PayPalPay.phase,
                     recipient = recipient,
                     isRequest = kind == PayKind.REQUEST,
@@ -280,14 +264,14 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
                         pin = ""
                         step = 1
                     }
-                ) else ProcessingStep(kind)
+                )
                 else -> SuccessStep(
                     kind = kind,
                     recipient = recipient,
                     amount = amountValue,
                     source = sourceLabel,
-                    refId = refId,
                     paidAt = paidAt,
+                    link = PayPalPay.lastLink,
                     onDone = { nav.pop() }
                 )
             }
@@ -306,13 +290,12 @@ private fun ContactStep(
 ) {
     var query by remember { mutableStateOf("") }
     val q = query.trim()
-    val digits = q.filter(Char::isDigit)
-    val looksLikeNumber = digits.length >= 10 && q.all { it.isDigit() || it == ' ' || it == '+' || it == '-' }
-    val looksLikeUpi = q.contains("@") && q.length > 3
+    val looksLikeUpi = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(q)
     val matches = recents.filter { c ->
         q.isBlank() ||
                 c.name.contains(q, ignoreCase = true) ||
-                (digits.isNotEmpty() && c.phone.filter(Char::isDigit).contains(digits))
+                c.phone.contains(q, ignoreCase = true) ||
+                false
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -337,7 +320,7 @@ private fun ContactStep(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 40.dp)
             ) {
-                if (looksLikeNumber || looksLikeUpi) {
+                if (looksLikeUpi) {
                     item {
                         Row(
                             Modifier.fillMaxWidth().bounceClick { onPick(q, q, "") }.padding(bottom = 14.dp),
@@ -350,7 +333,7 @@ private fun ContactStep(
                             Spacer(Modifier.width(14.dp))
                             Column {
                                 Text(if (kind.isRequest) "Request from $q" else "Pay $q", fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                                Text("New recipient", fontSize = 13.sp, color = Pal.Muted)
+                                Text("New recipient · PayPal email", fontSize = 13.sp, color = Pal.Muted)
                             }
                         }
                     }
@@ -369,168 +352,10 @@ private fun ContactStep(
                         }
                     }
                 }
-                if (matches.isEmpty() && !looksLikeNumber && !looksLikeUpi) {
+                if (matches.isEmpty() && !looksLikeUpi) {
                     item { Text("Nobody yet. Type their PayPal email above to pay them.", fontSize = 14.sp, color = Pal.Muted) }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun BankFormStep(kind: PayKind, onBack: () -> Unit, onPick: (String, String, String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var account by remember { mutableStateOf("") }
-    var ifsc by remember { mutableStateOf("") }
-
-    Box(Modifier.fillMaxSize().imePadding()) {
-        Column(Modifier.fillMaxSize()) {
-            PayTopBar(kind.title, onBack)
-            Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                PayTextField(name, { name = it }, "Account holder name")
-                PayTextField(
-                    value = account,
-                    onValueChange = { input -> account = input.filter(Char::isDigit).take(18) },
-                    label = "Account number",
-                    keyboardType = KeyboardType.Number
-                )
-                PayTextField(ifsc, { input -> ifsc = input.uppercase().take(11) }, "IFSC code")
-                Text("IMPS transfers arrive instantly, any time of day.", fontSize = 13.sp, color = Pal.Muted)
-            }
-        }
-        PinnedCta {
-            CoralPill(
-                title = "Continue",
-                enabled = name.isNotBlank() && account.length >= 9 && ifsc.length == 11,
-                onClick = { onPick(name.trim(), "A/C ••${account.takeLast(4)} · $ifsc", "") }
-            )
-        }
-    }
-}
-
-@Composable
-private fun RechargeStep(kind: PayKind, onBack: () -> Unit, onPick: (String, String, String) -> Unit) {
-    var number by remember { mutableStateOf("") }
-    var operator by remember { mutableIntStateOf(0) }
-    var plan by remember { mutableIntStateOf(1) }
-    val operators = listOf("Jio", "Airtel", "Vi", "BSNL")
-    val plans = listOf(199, 299, 399, 599, 799)
-
-    Box(Modifier.fillMaxSize().imePadding()) {
-        Column(Modifier.fillMaxSize()) {
-            PayTopBar(kind.title, onBack)
-            Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                PayTextField(
-                    value = number,
-                    onValueChange = { input -> number = input.filter(Char::isDigit).take(10) },
-                    label = "Mobile number",
-                    keyboardType = KeyboardType.Phone
-                )
-                SmallCaps("Operator")
-                PillTabs(operators, operator, { operator = it })
-                SmallCaps("Plan")
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    plans.forEachIndexed { i, p ->
-                        OutlinePill("₹$p", onClick = { plan = i }, selected = plan == i, compact = true)
-                    }
-                }
-            }
-        }
-        PinnedCta {
-            CoralPill(
-                title = "Continue",
-                enabled = number.length == 10,
-                onClick = { onPick("${operators[operator]} · $number", "Prepaid recharge", plans[plan].toString()) }
-            )
-        }
-    }
-}
-
-@Composable
-private fun BillStep(kind: PayKind, onBack: () -> Unit, onPick: (String, String, String) -> Unit) {
-    val categories: List<Pair<String, ImageVector>> = listOf(
-        Pair("Electricity", Icons.Outlined.Bolt),
-        Pair("Water", Icons.Outlined.Opacity),
-        Pair("Gas", Icons.Outlined.LocalGasStation),
-        Pair("Broadband", Icons.Outlined.Wifi),
-        Pair("DTH", Icons.Outlined.Tv),
-        Pair("Postpaid", Icons.Outlined.PhoneAndroid)
-    )
-    var selected by remember { mutableIntStateOf(0) }
-    var consumer by remember { mutableStateOf("") }
-
-    Box(Modifier.fillMaxSize().imePadding()) {
-        Column(Modifier.fillMaxSize()) {
-            PayTopBar(kind.title, onBack)
-            Column(
-                Modifier
-                    .weight(1f)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                categories.chunked(3).forEachIndexed { rowIndex, rowItems ->
-                    Row(Modifier.fillMaxWidth()) {
-                        rowItems.forEachIndexed { colIndex, cat ->
-                            val index = rowIndex * 3 + colIndex
-                            val isSelected = index == selected
-                            Column(
-                                Modifier.weight(1f).bounceClick { selected = index },
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Box(
-                                    Modifier
-                                        .size(62.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isSelected) Pal.Ink else Pal.Surface),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        cat.second,
-                                        contentDescription = cat.first,
-                                        tint = if (isSelected) Pal.OnInk else Pal.Ink,
-                                        modifier = Modifier.size(28.dp)
-                                    )
-                                }
-                                Spacer(Modifier.height(8.dp))
-                                Text(cat.first, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                }
-                PayTextField(
-                    value = consumer,
-                    onValueChange = { input -> consumer = input.take(20) },
-                    label = "Consumer / account number"
-                )
-            }
-        }
-        PinnedCta {
-            CoralPill(
-                title = "Fetch bill",
-                subtitle = "Demo amount until BBPS is connected",
-                enabled = consumer.length >= 4,
-                onClick = {
-                    // Deterministic demo amount so the same consumer number always shows the same bill.
-                    val demo = 400 + (consumer.hashCode() and 0x7FFFFFFF) % 1800
-                    onPick("${categories[selected].first} bill", consumer, demo.toString())
-                }
-            )
         }
     }
 }
@@ -613,27 +438,11 @@ private fun AmountStep(
                     OutlinePill("₹$v", onClick = { onAmount(v.toString()) }, compact = true)
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box {
-                    OutlinePill(
-                        text = (if (kind.isRequest) "Credit to: " else "From: ") + sourceLabel,
-                        onClick = { menu = true },
-                        compact = true,
-                        icon = Icons.Outlined.AccountBalance
-                    )
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        sources.forEachIndexed { i, s ->
-                            DropdownMenuItem(
-                                text = { Text(s) },
-                                onClick = {
-                                    onSource(i)
-                                    menu = false
-                                }
-                            )
-                        }
-                    }
-                }
+            Spacer(Modifier.height(6.dp))
+            Text("PayPal charges in US dollars at today's rate", fontSize = 12.sp, color = Pal.Muted)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                StatusChip((if (kind.isRequest) "Paid to: " else "From: ") + sourceLabel)
                 OutlinePill(if (showNote) "Hide note" else "Add note", onClick = { showNote = !showNote }, compact = true)
             }
             Expand(showNote) {
@@ -672,6 +481,7 @@ private fun PinStep(
     amount: Double,
     source: String,
     pin: String,
+    message: String = "",
     onKey: (String) -> Unit,
     onBack: () -> Unit
 ) {
@@ -687,7 +497,7 @@ private fun PinStep(
                 contentAlignment = Alignment.Center
             ) { Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(30.dp)) }
             Spacer(Modifier.height(16.dp))
-            Text("Enter PIN", fontSize = 24.sp)
+            Text("Enter your PIN", fontSize = 24.sp)
             Spacer(Modifier.height(6.dp))
             Text(
                 "Paying ${money(amount)} to $recipient\nfrom $source",
@@ -711,31 +521,17 @@ private fun PinStep(
                 }
             }
             Spacer(Modifier.height(18.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Outlined.Security, contentDescription = null, tint = Pal.Muted, modifier = Modifier.size(14.dp))
-                Text("Secured by PayPal", fontSize = 12.sp, color = Pal.Muted)
-            }
+            Text(
+                message,
+                fontSize = 13.sp,
+                color = Pal.Coral,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.height(20.dp).fillMaxWidth()
+            )
         }
         Column(Modifier.navigationBarsPadding().padding(horizontal = 12.dp).padding(bottom = 8.dp)) {
             PayNumpad(showDot = false, onKey = onKey)
         }
-    }
-}
-
-/* ───────────── step 3: processing ───────────── */
-
-@Composable
-private fun ProcessingStep(kind: PayKind) {
-    Column(
-        Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        CircularProgressIndicator(Modifier.size(64.dp), color = Pal.Coral, strokeWidth = 5.dp)
-        Spacer(Modifier.height(24.dp))
-        Text(if (kind.isRequest) "Sending request…" else "Processing securely…", fontSize = 20.sp)
-        Spacer(Modifier.height(6.dp))
-        Text("Please don't close the app", fontSize = 13.sp, color = Pal.Muted)
     }
 }
 
@@ -747,8 +543,8 @@ private fun SuccessStep(
     recipient: String,
     amount: Double,
     source: String,
-    refId: String,
     paidAt: String,
+    link: String?,
     onDone: () -> Unit
 ) {
     val context = LocalContext.current
@@ -790,7 +586,7 @@ private fun SuccessStep(
         Spacer(Modifier.height(6.dp))
         Text(money(amount), fontSize = 46.sp)
         Text(
-            if (kind.isRequest) "requested from $recipient" else "paid to $recipient",
+            if (kind.isRequest) "requested with a payment link" else "paid to $recipient",
             fontSize = 15.sp,
             color = Pal.Muted
         )
@@ -799,23 +595,36 @@ private fun SuccessStep(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Pal.Surface).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            DetailRow(if (kind.isRequest) "Credit to" else "Debited from", source)
-            DetailRow("Reference ID", refId)
+            DetailRow(if (kind.isRequest) "Paid into" else "Paid from", source)
             DetailRow("Time", paidAt)
-            DetailRow("Status", if (kind.isRequest) "Awaiting payment" else "Completed")
+            DetailRow("Status", if (kind.isRequest) "Waiting for payment" else "Completed")
+            if (kind.isRequest) Text(
+                "When someone pays your link it shows up in your activity automatically.",
+                fontSize = 13.sp, color = Pal.Muted
+            )
         }
         Spacer(Modifier.weight(1f))
-        OutlinePill(
-            "Share receipt",
-            onClick = {
-                shareText(
-                    context,
-                    if (kind.isRequest) "Please pay me ${money(amount)} on PayRajpal. Ref $refId"
-                    else "Paid ${money(amount)} to $recipient on PayRajpal. Ref $refId"
+        if (kind.isRequest && link != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinePill(
+                    "Share link",
+                    onClick = { shareText(context, "Please pay me ${money(amount)} on PayRajpal: $link") },
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Outlined.Share
                 )
-            },
-            icon = Icons.Outlined.Share
-        )
+                OutlinePill(
+                    "Copy link",
+                    onClick = { copyText(context, "Payment link", link) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        } else if (!kind.isRequest) {
+            OutlinePill(
+                "Share receipt",
+                onClick = { shareText(context, "Paid ${money(amount)} to $recipient on PayRajpal.") },
+                icon = Icons.Outlined.Share
+            )
+        }
         Spacer(Modifier.height(12.dp))
         CoralPill("Done", onClick = onDone)
     }
@@ -922,15 +731,6 @@ fun ScanScreen(nav: Navigator) {
             val name = u.getQueryParameter("n").orEmpty().ifBlank { email }
             if (email.contains("@")) nav.replace(Route.Pay(PayKind.PAY, name, email))
             else toast(context, "This QR code is not valid")
-        } else if (cleanValue.startsWith("upi://pay", ignoreCase = true)) {
-            try {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(cleanValue))
-                val chooser = Intent.createChooser(intent, "Pay with")
-                context.startActivity(chooser)
-            } catch (e: Exception) {
-                Log.e("ScanScreen", "Failed to launch UPI intent", e)
-                toast(context, "No UPI payment app found on this device")
-            }
         } else if (cleanValue.startsWith("http://", ignoreCase = true) || cleanValue.startsWith("https://", ignoreCase = true)) {
             try {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(cleanValue))
