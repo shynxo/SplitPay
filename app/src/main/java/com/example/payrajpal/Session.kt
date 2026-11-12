@@ -53,7 +53,7 @@ object Session {
         email = p.getString("email", "") ?: ""
     }
 
-    /** payrajpal://auth?token=…  (or ?error=…) — opened by the server after Log in with PayPal. */
+    /** splitpay://auth?token=…  (or ?error=…) — opened by the server after Log in with PayPal. */
     fun onAuthLink(uri: Uri) {
         val t = uri.getQueryParameter("token")
         if (t.isNullOrBlank()) {
@@ -88,7 +88,7 @@ object Session {
     }
 }
 
-/** Calls to the PayRajpal server. All suspend + main-safe. */
+/** Calls to the SplitPay server. All suspend + main-safe. */
 object PayApi {
     private val JSON = "application/json; charset=utf-8".toMediaType()
     private val http = OkHttpClient.Builder()

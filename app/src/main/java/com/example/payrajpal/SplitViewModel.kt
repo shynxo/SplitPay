@@ -48,7 +48,7 @@ class SplitViewModel : ViewModel() {
         val m1 = Member(
             id = "m1",
             name = "You",
-            contact = "you@payrajpal",
+            contact = "you",
             email = "",
             status = PaymentStatus.PAID
         )

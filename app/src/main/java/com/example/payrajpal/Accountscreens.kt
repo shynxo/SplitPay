@@ -267,7 +267,7 @@ private fun TxStackCard(tx: Transaction, color: Color, expanded: Boolean, last: 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinePill(
                         "Share receipt",
-                        onClick = { shareText(context, "PayRajpal receipt · ${tx.title} · ${money(value)} · Ref $ref") },
+                        onClick = { shareText(context, "SplitPay receipt · ${tx.title} · ${money(value)} · Ref $ref") },
                         modifier = Modifier.weight(1f),
                         icon = Icons.Outlined.Share
                     )

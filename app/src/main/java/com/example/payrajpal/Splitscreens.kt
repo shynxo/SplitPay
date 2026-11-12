@@ -479,7 +479,7 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                 onClick = {
                     phase = 1
                     val splitJson = buildSplitJson(session)
-                    // Your friend's server works out who owes what; PayRajpal creates the payment links.
+                    // Your friend's server works out who owes what; SplitPay creates the payment links.
                     BackendService.postJson("/api/splits", splitJson, context) { success, response ->
                         if (!success) {
                             phase = 0

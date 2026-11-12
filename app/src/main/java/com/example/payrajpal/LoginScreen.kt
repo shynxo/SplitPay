@@ -37,7 +37,7 @@ fun LoginScreen() {
     ) {
         Sparkle(44.dp, Pal.Coral, spin = true)
         Spacer(Modifier.height(20.dp))
-        Text("PayRajpal", fontSize = 40.sp, fontWeight = FontWeight.Medium)
+        Text("SplitPay", fontSize = 40.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(8.dp))
         Text(
             "Pay anyone and split bills with AI.\nLog in with your PayPal account to start.",

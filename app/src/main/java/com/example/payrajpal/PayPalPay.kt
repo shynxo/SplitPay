@@ -25,7 +25,7 @@ sealed interface PayPhase {
 /**
  * One real PayPal payment (or money-request link) at a time.
  * The server captures the money and forwards it to the recipient; the app only opens PayPal and listens
- * for payrajpal://paypal/return.
+ * for splitpay://paypal/return.
  */
 object PayPalPay {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -74,7 +74,7 @@ object PayPalPay {
         }
     }
 
-    /** payrajpal://paypal/return?pid=…&status=… */
+    /** splitpay://paypal/return?pid=…&status=… */
     fun onReturnLink(uri: Uri) {
         val pid = uri.getQueryParameter("pid") ?: return
         pendingId = pid

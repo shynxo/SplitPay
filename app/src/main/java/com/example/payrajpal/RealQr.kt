@@ -34,6 +34,6 @@ fun RealQr(text: String, modifier: Modifier = Modifier, color: Color = Color.Bla
     }
 }
 
-/** The QR payload other PayRajpal users scan to pay you. */
+/** The QR payload other SplitPay users scan to pay you. */
 fun payQrPayload(name: String, email: String): String =
-    "payrajpal://pay?e=" + java.net.URLEncoder.encode(email, "UTF-8") + "&n=" + java.net.URLEncoder.encode(name, "UTF-8")
+    "splitpay://pay?e=" + java.net.URLEncoder.encode(email, "UTF-8") + "&n=" + java.net.URLEncoder.encode(name, "UTF-8")

@@ -93,7 +93,7 @@ fun HomeScreen(vm: SplitViewModel, ui: PayUiViewModel, nav: Navigator) {
     val session by vm.session.collectAsState()
 
     val monthStart = startOfMonth()
-    // PayPal doesn't let apps read a personal balance, so we show what flowed through PayRajpal this month.
+    // PayPal doesn't let apps read a personal balance, so we show what flowed through SplitPay this month.
     val balance = txs.filter { it.isCredit && it.epochMillis >= monthStart }.sumOf { it.amount.asDouble() }
     val spent = txs.filter { !it.isCredit && it.epochMillis >= monthStart }.sumOf { it.amount.asDouble() }
     val lastPay = txs.firstOrNull { !it.isCredit }
@@ -392,7 +392,7 @@ private fun startOfMonth(): Long = Calendar.getInstance().apply {
     set(Calendar.DAY_OF_MONTH, 1); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
 }.timeInMillis
 
-/** Real spending: money you sent through PayRajpal, per day (7 days) or per month (6 months). */
+/** Real spending: money you sent through SplitPay, per day (7 days) or per month (6 months). */
 private fun chartData(period: Int, txs: List<Transaction>): Pair<List<Float>, List<String>> {
     val sent = txs.filter { !it.isCredit && it.epochMillis > 0 }
     val labels = ArrayList<String>()

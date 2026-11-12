@@ -46,9 +46,9 @@ private const val KEY_DARK = "dark_mode"
 
 class MainActivity : ComponentActivity() {
 
-    /** payrajpal://auth?token=…  (PayPal login)   ·   payrajpal://paypal/return?…  (finished paying) */
+    /** splitpay://auth?token=…  (PayPal login)   ·   splitpay://paypal/return?…  (finished paying) */
     private fun handleLink(uri: Uri?) {
-        if (uri == null || uri.scheme != "payrajpal") return
+        if (uri == null || uri.scheme != "splitpay" && uri.scheme != "payrajpal") return
         when (uri.host) {
             "auth" -> Session.onAuthLink(uri)
             "paypal" -> PayPalPay.onReturnLink(uri)
@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
             PayTheme {
                 CompositionLocalProvider(LocalHaptics provides haptics) {
                     Surface(modifier = Modifier.fillMaxSize(), color = Pal.Bg, contentColor = Pal.Ink) {
-                        PayRajpalApp()
+                        SplitPayApp()
                     }
                 }
             }
@@ -122,7 +122,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun PayRajpalApp(
+fun SplitPayApp(
     vm: SplitViewModel = viewModel(),
     ui: PayUiViewModel = viewModel()
 ) {

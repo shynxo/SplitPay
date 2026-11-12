@@ -185,7 +185,7 @@ fun PayFlowScreen(route: Route.Pay, vm: SplitViewModel, ui: PayUiViewModel, nav:
             } else if (kind == PayKind.REQUEST) {
                 PayPalPay.reset()
                 PayPalPay.request(context, Math.round(amountValue * 100), note) { url ->
-                    "Please pay me ${money(amountValue)} on PayRajpal: $url"
+                    "Please pay me ${money(amountValue)} on SplitPay: $url"
                 }
             }
         }
@@ -608,7 +608,7 @@ private fun SuccessStep(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinePill(
                     "Share link",
-                    onClick = { shareText(context, "Please pay me ${money(amount)} on PayRajpal: $link") },
+                    onClick = { shareText(context, "Please pay me ${money(amount)} on SplitPay: $link") },
                     modifier = Modifier.weight(1f),
                     icon = Icons.Outlined.Share
                 )
@@ -621,7 +621,7 @@ private fun SuccessStep(
         } else if (!kind.isRequest) {
             OutlinePill(
                 "Share receipt",
-                onClick = { shareText(context, "Paid ${money(amount)} to $recipient on PayRajpal.") },
+                onClick = { shareText(context, "Paid ${money(amount)} to $recipient on SplitPay.") },
                 icon = Icons.Outlined.Share
             )
         }
@@ -724,8 +724,8 @@ fun ScanScreen(nav: Navigator) {
         val cleanValue = qrData.trim()
         if (cleanValue.isBlank()) return
 
-        if (cleanValue.startsWith("payrajpal://pay", ignoreCase = true)) {
-            // A PayRajpal QR: open the pay screen with the person already filled in.
+        if (cleanValue.startsWith("splitpay://pay", ignoreCase = true) || cleanValue.startsWith("payrajpal://pay", ignoreCase = true)) {
+            // A SplitPay QR: open the pay screen with the person already filled in.
             val u = Uri.parse(cleanValue)
             val email = u.getQueryParameter("e").orEmpty()
             val name = u.getQueryParameter("n").orEmpty().ifBlank { email }
@@ -740,7 +740,7 @@ fun ScanScreen(nav: Navigator) {
                 toast(context, "Unable to open payment link")
             }
         } else {
-            toast(context, "Not a PayRajpal QR code")
+            toast(context, "Not a SplitPay QR code")
         }
     }
 
@@ -789,7 +789,7 @@ fun ScanScreen(nav: Navigator) {
                         email = Session.email,
                         payload = myQr,
                         onCopy = { copyText(context, "PayPal email", Session.email) },
-                        onShare = { shareText(context, "Pay me on PayRajpal (PayPal): ${Session.email}") }
+                        onShare = { shareText(context, "Pay me on SplitPay (PayPal): ${Session.email}") }
                     )
                 }
             }

@@ -408,7 +408,7 @@ fun SplashScreen(onStart: () -> Unit, lockEnabled: Boolean = true) {
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            Text(if (pinNote.isNotEmpty()) pinNote else "Enter your PayRajpal PIN", fontSize = 12.sp, color = Pal.OnCoral.copy(alpha = 0.7f))
+                            Text(if (pinNote.isNotEmpty()) pinNote else "Enter your SplitPay PIN", fontSize = 12.sp, color = Pal.OnCoral.copy(alpha = 0.7f))
                             Spacer(Modifier.height(10.dp))
                             PayNumpad(showDot = false) { key ->
                                 if (!unlocked && pin.length < 4 || key == "⌫") {
