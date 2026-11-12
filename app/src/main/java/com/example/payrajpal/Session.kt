@@ -116,9 +116,7 @@ object PayApi {
                     if (!res.isSuccessful) {
                         val msg = json.optString("error")
                         if (msg.isNotBlank()) throw ApiException(msg)
-                        // Render answers 404/502/503 with a plain page while the free server is waking up or redeploying.
-                        if (res.code in listOf(404, 502, 503, 504)) throw ApiException("The server is waking up. Wait a minute and try again.")
-                        throw ApiException("Server error (${res.code})")
+                        throw ApiException("Server error ${res.code} at ${req.method} ${req.url}")
                     }
                     json
                 }
