@@ -156,6 +156,18 @@ object BackendService {
             }
         })
     }
+
+    fun payQr(
+        qrData: String,
+        context: Context? = null,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        val json = JSONObject().apply {
+            put("qrData", qrData)
+            put("payload", qrData)
+        }.toString()
+        postJson("/api/pay", json, context, onResult)
+    }
 }
 
 fun parseReceiptResponse(jsonStr: String): ParsedReceipt? {

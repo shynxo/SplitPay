@@ -1,9 +1,22 @@
 package com.example.payrajpal
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -754,12 +767,63 @@ fun ScanScreen(nav: Navigator) {
     val context = LocalContext.current
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var torch by remember { mutableStateOf(false) }
+    var customPayPayload by remember { mutableStateOf<String?>(null) }
+    var isPaying by remember { mutableStateOf(false) }
     val upiId = "shreyan@payrajpal"
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasCameraPermission = isGranted
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    fun handleDecodedQr(qrData: String) {
+        val cleanValue = qrData.trim()
+        if (cleanValue.isBlank()) return
+
+        if (cleanValue.startsWith("upi://pay", ignoreCase = true)) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(cleanValue))
+                val chooser = Intent.createChooser(intent, "Pay with")
+                context.startActivity(chooser)
+            } catch (e: Exception) {
+                Log.e("ScanScreen", "Failed to launch UPI intent", e)
+                toast(context, "No UPI payment app found on this device")
+            }
+        } else if (cleanValue.startsWith("http://", ignoreCase = true) || cleanValue.startsWith("https://", ignoreCase = true)) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(cleanValue))
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.e("ScanScreen", "Failed to open web link", e)
+                toast(context, "Unable to open payment link")
+            }
+        } else {
+            customPayPayload = cleanValue
+        }
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            toast(context, "QR read from image (demo)")
-            nav.replace(Route.Pay(PayKind.PAY, "Starbucks CyberHub"))
+            QrDecoder.decodeFromUri(context, uri) { qrCode ->
+                if (!qrCode.isNullOrBlank()) {
+                    handleDecodedQr(qrCode)
+                } else {
+                    toast(context, "No valid QR code found in selected image")
+                }
+            }
         }
     }
 
@@ -783,8 +847,12 @@ fun ScanScreen(nav: Navigator) {
             ) { t ->
                 if (t == 0) {
                     ScanTab(
-                        onGallery = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        onNumber = { nav.replace(Route.Pay(PayKind.PAY)) }
+                        hasCameraPermission = hasCameraPermission,
+                        torchEnabled = torch,
+                        onRequestPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                        onGallery = { picker.launch("image/*") },
+                        onNumber = { nav.replace(Route.Pay(PayKind.PAY)) },
+                        onQrDetected = { qr -> handleDecodedQr(qr) }
                     )
                 } else {
                     MyQrTab(
@@ -811,12 +879,67 @@ fun ScanScreen(nav: Navigator) {
             }
         }
     }
+
+    customPayPayload?.let { payload ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { if (!isPaying) customPayPayload = null },
+            containerColor = Pal.Surface,
+            shape = RoundedCornerShape(32.dp),
+            title = { Text("Confirm Payment", fontSize = 22.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Decoded Recipient / Payload:", fontSize = 13.sp, color = Pal.Muted)
+                    Text(payload, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        isPaying = true
+                        BackendService.payQr(payload, context) { success, _ ->
+                            isPaying = false
+                            customPayPayload = null
+                            if (success) {
+                                toast(context, "Payment completed successfully!")
+                                nav.pop()
+                            }
+                        }
+                    },
+                    enabled = !isPaying
+                ) {
+                    if (isPaying) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Pal.CoralDeep, strokeWidth = 2.dp)
+                    } else {
+                        Text("Confirm & Pay", color = Pal.CoralDeep, fontWeight = FontWeight.Bold)
+                    }
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { customPayPayload = null }, enabled = !isPaying) {
+                    Text("Cancel", color = Pal.Ink)
+                }
+            }
+        )
+    }
 }
 
 @Composable
-private fun ScanTab(onGallery: () -> Unit, onNumber: () -> Unit) {
+private fun ScanTab(
+    hasCameraPermission: Boolean,
+    torchEnabled: Boolean,
+    onRequestPermission: () -> Unit,
+    onGallery: () -> Unit,
+    onNumber: () -> Unit,
+    onQrDetected: (String) -> Unit
+) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Viewfinder(Modifier.size(280.dp))
+        Viewfinder(
+            modifier = Modifier.size(280.dp),
+            hasCameraPermission = hasCameraPermission,
+            torchEnabled = torchEnabled,
+            onRequestPermission = onRequestPermission,
+            onQrDetected = onQrDetected
+        )
         Spacer(Modifier.height(16.dp))
         Text("Align the QR code inside the frame", fontSize = 14.sp, color = Pal.Muted)
         Spacer(Modifier.height(16.dp))
@@ -845,7 +968,16 @@ private fun MyQrTab(upiId: String, onCopy: () -> Unit, onShare: () -> Unit) {
 }
 
 @Composable
-private fun Viewfinder(modifier: Modifier = Modifier) {
+private fun Viewfinder(
+    modifier: Modifier = Modifier,
+    hasCameraPermission: Boolean = false,
+    torchEnabled: Boolean = false,
+    onRequestPermission: () -> Unit = {},
+    onQrDetected: (String) -> Unit = {}
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
     val transition = rememberInfiniteTransition(label = "viewfinder")
     val scan by transition.animateFloat(
         initialValue = 0f,
@@ -853,7 +985,69 @@ private fun Viewfinder(modifier: Modifier = Modifier) {
         animationSpec = infiniteRepeatable(tween(1600, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "scanLine"
     )
+
     Box(modifier.clip(RoundedCornerShape(36.dp)).background(Color(0xFF1C1C19))) {
+        if (hasCameraPermission) {
+            val previewView = remember { PreviewView(context) }
+            val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
+            var camera by remember { mutableStateOf<Camera?>(null) }
+
+            LaunchedEffect(torchEnabled) {
+                camera?.cameraControl?.enableTorch(torchEnabled)
+            }
+
+            androidx.compose.ui.viewinterop.AndroidView(
+                factory = { previewView },
+                modifier = Modifier.fillMaxSize(),
+                update = {
+                    cameraProviderFuture.addListener({
+                        try {
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = Preview.Builder().build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
+
+                            val imageAnalyzer = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build()
+                                .also {
+                                    it.setAnalyzer(
+                                        ContextCompat.getMainExecutor(context),
+                                        QrDecoder.createImageAnalyzer(onQrDetected)
+                                    )
+                                }
+
+                            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+                            cameraProvider.unbindAll()
+                            camera = cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                cameraSelector,
+                                preview,
+                                imageAnalyzer
+                            )
+                        } catch (e: Exception) {
+                            Log.e("Viewfinder", "Error binding camera preview", e)
+                        }
+                    }, ContextCompat.getMainExecutor(context))
+                }
+            )
+        } else {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text("Camera permission required", color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(10.dp))
+                androidx.compose.material3.TextButton(onClick = onRequestPermission) {
+                    Text("Grant Permission", color = Pal.Coral)
+                }
+            }
+        }
+
         Canvas(Modifier.fillMaxSize()) {
             val len = 46.dp.toPx()
             val stroke = 5.dp.toPx()
