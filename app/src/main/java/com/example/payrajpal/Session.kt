@@ -116,7 +116,9 @@ object PayApi {
                     if (!res.isSuccessful) {
                         val msg = json.optString("error")
                         if (msg.isNotBlank()) throw ApiException(msg)
-                        throw ApiException("Server error ${res.code} at ${req.method} ${req.url}")
+                        // Render answers 404/502/503/504 with a plain page while the free server wakes up or redeploys.
+                        if (res.code in listOf(404, 502, 503, 504)) throw ApiException("The server is waking up. Wait a minute and try again.")
+                        throw ApiException("Server error (${res.code})")
                     }
                     json
                 }
@@ -124,6 +126,17 @@ object PayApi {
                 throw ApiException("Can't reach the server. Check your internet connection.")
             }
         }
+
+    /** Wakes the free server up (it sleeps when idle) so the first real tap isn't slow. */
+    fun warmUp() {
+        try {
+            val req = Request.Builder().url(AppConfig.SERVER_URL + "/health").build()
+            http.newCall(req).enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) {}
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.close() }
+            })
+        } catch (_: Exception) { }
+    }
 
     suspend fun me(): JSONObject = call("GET", "/api/me")
     suspend fun logout(token: String) { call("POST", "/api/logout", tokenOverride = token) }
@@ -141,6 +154,24 @@ object PayApi {
     }
 
     /** A link anyone can open to pay you. */
+    /** One payment link per friend. shares = (memberId, name, amountMinor). Returns (splitId, memberId -> link). */
+    suspend fun createSplit(title: String, shares: List<Triple<String, String, Long>>): Pair<String, Map<String, String>> {
+        val arr = org.json.JSONArray()
+        shares.forEach { (id, name, amt) -> arr.put(JSONObject().put("memberId", id).put("name", name).put("amountMinor", amt)) }
+        val r = call("POST", "/api/split", JSONObject().put("title", title).put("shares", arr))
+        val ms = r.getJSONArray("members")
+        val links = (0 until ms.length()).associate { ms.getJSONObject(it).getString("memberId") to ms.getJSONObject(it).getString("payUrl") }
+        return r.getString("splitId") to links
+    }
+
+    /** Who has paid so far: memberId -> paid, and the total collected in rupees. */
+    suspend fun splitStatus(id: String): Pair<Map<String, Boolean>, Double> {
+        val r = call("GET", "/api/split/$id")
+        val ms = r.getJSONArray("members")
+        val paid = (0 until ms.length()).associate { ms.getJSONObject(it).getString("memberId") to (ms.getJSONObject(it).getString("status") == "PAID") }
+        return paid to r.optLong("collectedMinor") / 100.0
+    }
+
     suspend fun createRequest(amountMinor: Long, note: String): String =
         call("POST", "/api/request", JSONObject().put("amountMinor", amountMinor).put("note", note)).getString("payUrl")
 

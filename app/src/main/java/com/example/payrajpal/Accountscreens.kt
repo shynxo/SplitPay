@@ -96,13 +96,16 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.compose.material.icons.filled.Refresh
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /* ═════════════════════════════ ACTIVITY (PAYMENT HISTORY) ═════════════════════════════ */
 
 @Composable
 fun HistoryScreen(vm: SplitViewModel, nav: Navigator) {
     val txs by vm.transactions.collectAsState()
+    val refreshScope = androidx.compose.runtime.rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var searching by remember { mutableStateOf(false) }
     var filter by remember { mutableIntStateOf(0) }
@@ -127,6 +130,11 @@ fun HistoryScreen(vm: SplitViewModel, nav: Navigator) {
 
     Column(Modifier.fillMaxSize()) {
         PayTopBar("Activity", onBack = { nav.pop() }) {
+            CircleIconButton(
+                Icons.Filled.Refresh,
+                "Refresh",
+                onClick = { refreshScope.launch { refreshHistory(vm) } }
+            )
             CircleIconButton(
                 Icons.Filled.Search,
                 "Search",

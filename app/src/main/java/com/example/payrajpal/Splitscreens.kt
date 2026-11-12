@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -130,52 +131,17 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
         }
     }
 
+    // Watch which friends have paid their link.
     LaunchedEffect(splitId) {
         val currentSplitId = splitId ?: return@LaunchedEffect
         while (isActive) {
-            BackendService.getJson("/api/splits/$currentSplitId/invoices", context) { success, response ->
-                // ignore late answers for an old split
-                if (success && vm.splitId.value == currentSplitId) {
-                    try {
-                        val obj = JSONObject(response)
-                        val invoicesArr = obj.optJSONArray("invoices") ?: JSONArray()
-                        val statusMap = mutableMapOf<String, PaymentStatus>()
-                        val amountMap = mutableMapOf<String, Double>()
-
-                        for (i in 0 until invoicesArr.length()) {
-                            val inv = invoicesArr.getJSONObject(i)
-                            val pid = inv.optString("participantId")
-                            val st = inv.optString("status")
-                            val amCents = inv.optDouble("amountCents", -1.0)
-
-                            if (pid.isNotBlank()) {
-                                statusMap[pid] = when {
-                                    st.equals("PAID", ignoreCase = true) -> PaymentStatus.PAID
-                                    st.equals("OVERDUE", ignoreCase = true) -> PaymentStatus.OVERDUE
-                                    else -> PaymentStatus.PENDING
-                                }
-                                if (amCents >= 0.0) {
-                                    amountMap[pid] = amCents / 100.0
-                                }
-                            }
-                        }
-                        if (statusMap.isNotEmpty()) {
-                            vm.updateMemberStatuses(statusMap)
-                        }
-                        if (amountMap.isNotEmpty()) {
-                            vm.setServerBreakdowns(amountMap)
-                        }
-
-                        val summaryObj = obj.optJSONObject("summary")
-                        if (summaryObj != null) {
-                            val collectedCents = summaryObj.optDouble("collectedCents", 0.0)
-                            vm.setCollectedAmount(collectedCents / 100.0)
-                        }
-                    } catch (e: Exception) {
-                        Log.e("BACKEND", "Error parsing invoices poll response", e)
-                    }
+            try {
+                val (paid, collected) = PayApi.splitStatus(currentSplitId)
+                if (vm.splitId.value == currentSplitId) {
+                    vm.updateMemberStatuses(paid.mapValues { if (it.value) PaymentStatus.PAID else PaymentStatus.PENDING })
+                    vm.setCollectedAmount(collected)
                 }
-            }
+            } catch (_: Exception) { /* try again on the next tick */ }
             delay(5000)
         }
     }
@@ -452,6 +418,8 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
     var phase by rememberSaveable { mutableIntStateOf(0) } // 0 idle · 1 sending · 2 sent
     val members = session.members
     val serverBreakdowns by vm.serverBreakdowns.collectAsState()
+    val payLinks by vm.payLinks.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     // Added a friend or changed items after sending? Allow sending again.
     LaunchedEffect(members.size, session.items) {
@@ -473,6 +441,15 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                         Column(Modifier.weight(1f)) {
                             Text(m.name, fontSize = 18.sp, fontWeight = FontWeight.Medium)
                             Text(m.contact.toString(), fontSize = 13.sp, color = Pal.Ink.copy(alpha = 0.6f))
+                            val link = payLinks[m.id]
+                            if (link != null && m.status != PaymentStatus.PAID) {
+                                Spacer(Modifier.height(8.dp))
+                                OutlinePill(
+                                    "Share link",
+                                    onClick = { shareText(context, "Your share of ${session.merchantName} is ${money(share)}. Pay here: $link") },
+                                    compact = true
+                                )
+                            }
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text(money(share), fontSize = 22.sp)
@@ -480,7 +457,7 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                                 when (m.status) {
                                     PaymentStatus.PAID -> "Paid"
                                     PaymentStatus.OVERDUE -> "Overdue"
-                                    PaymentStatus.PENDING -> if (phase == 2) "Requested" else "Pending"
+                                    PaymentStatus.PENDING -> if (phase == 2) "Link sent" else "Pending"
                                 }
                             )
                         }
@@ -491,58 +468,62 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
         PinnedCta {
             CoralPill(
                 title = when (phase) {
-                    0 -> "Send requests"
+                    0 -> "Create payment links"
                     1 -> "Sending…"
-                    else -> "Requests sent"
+                    else -> "Links ready"
                 },
-                subtitle = if (phase == 0) "Each person gets their own amount" else null,
+                subtitle = if (phase == 0) "Each friend gets their own link to pay you" else null,
                 loading = phase == 1,
                 haptic = HapticKind.Heavy,
                 enabled = phase != 2 && members.size > 1 && session.items.isNotEmpty(),
                 onClick = {
                     phase = 1
                     val splitJson = buildSplitJson(session)
-                    Log.d("BACKEND", "Sending POST /api/splits JSON: $splitJson")
+                    // Your friend's server works out who owes what; PayRajpal creates the payment links.
                     BackendService.postJson("/api/splits", splitJson, context) { success, response ->
-                        if (success) {
-                            try {
-                                val splitObj = JSONObject(response)
-                                val sid = splitObj.optString("splitId")
-
-                                val breakdownsArr = splitObj.optJSONArray("breakdowns")
-                                if (breakdownsArr != null) {
-                                    val map = mutableMapOf<String, Double>()
-                                    for (i in 0 until breakdownsArr.length()) {
-                                        val bObj = breakdownsArr.getJSONObject(i)
-                                        val pid = bObj.optString("participantId")
-                                        val tc = bObj.optDouble("totalCents", 0.0)
-                                        if (pid.isNotBlank()) {
-                                            map[pid] = tc / 100.0
-                                        }
-                                    }
-                                    if (map.isNotEmpty()) {
-                                        vm.setServerBreakdowns(map)
-                                    }
-                                }
-
-                                if (sid.isNotBlank()) {
-                                    vm.setSplitId(sid)
-                                    BackendService.postJson("/api/splits/$sid/invoices", "{}", context) { ok, body ->
-                                        phase = if (ok) 2 else 0
-                                        // PayPal can refuse one person (e.g. bad email) while the call itself succeeds
-                                        if (ok && body.contains("\"error\":\"")) {
-                                            Toast.makeText(context, "Some invoices failed. Check the emails.", Toast.LENGTH_LONG).show()
-                                        }
-                                    }
-                                } else {
-                                    phase = 2
-                                }
-                            } catch (e: Exception) {
-                                Log.e("BACKEND", "Error parsing split response", e)
-                                phase = 2
-                            }
-                        } else {
+                        if (!success) {
                             phase = 0
+                            return@postJson
+                        }
+                        val owed = mutableMapOf<String, Double>()
+                        try {
+                            val arr = JSONObject(response).optJSONArray("breakdowns")
+                            if (arr != null) {
+                                for (i in 0 until arr.length()) {
+                                    val o = arr.getJSONObject(i)
+                                    val pid = o.optString("participantId")
+                                    if (pid.isNotBlank()) owed[pid] = o.optDouble("totalCents", 0.0) / 100.0
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("BACKEND", "Error parsing split response", e)
+                        }
+                        if (owed.isNotEmpty()) vm.setServerBreakdowns(owed)
+
+                        val shares = members.filter { it.id != "m1" }.mapNotNull { m ->
+                            val minor = Math.round((owed[m.id] ?: vm.calculateMemberShare(m.id)) * 100)
+                            if (minor >= 100) Triple(m.id, m.name, minor) else null
+                        }
+                        if (shares.isEmpty()) {
+                            Toast.makeText(context, "Assign some items to your friends first", Toast.LENGTH_LONG).show()
+                            phase = 0
+                            return@postJson
+                        }
+                        scope.launch {
+                            try {
+                                val (sid, links) = PayApi.createSplit(session.merchantName, shares)
+                                vm.setPayLinks(links)
+                                vm.setSplitId(sid)
+                                phase = 2
+                                val text = buildString {
+                                    append("Bill split: ${session.merchantName}\n")
+                                    shares.forEach { (id, name, minor) -> append("$name · ${money(minor / 100.0)}: ${links[id]}\n") }
+                                }
+                                shareText(context, text.trim())
+                            } catch (e: Exception) {
+                                Toast.makeText(context, e.message ?: "Couldn't create the links", Toast.LENGTH_LONG).show()
+                                phase = 0
+                            }
                         }
                     }
                 }

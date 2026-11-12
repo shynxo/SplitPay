@@ -28,6 +28,11 @@ class SplitViewModel : ViewModel() {
     private val _serverBreakdowns = MutableStateFlow<Map<String, Double>>(emptyMap())
     val serverBreakdowns: StateFlow<Map<String, Double>> = _serverBreakdowns.asStateFlow()
 
+    private val _payLinks = MutableStateFlow<Map<String, String>>(emptyMap())
+    val payLinks: StateFlow<Map<String, String>> = _payLinks.asStateFlow()
+
+    fun setPayLinks(links: Map<String, String>) { _payLinks.value = links }
+
     private val _collectedAmount = MutableStateFlow<Double>(0.0)
     val collectedAmount: StateFlow<Double> = _collectedAmount.asStateFlow()
 
@@ -62,6 +67,7 @@ class SplitViewModel : ViewModel() {
     /** Forget any previously sent split so old amounts/statuses never leak into a new request. */
     private fun resetSendState() {
         _splitId.value = null
+        _payLinks.value = emptyMap()
         _serverBreakdowns.value = emptyMap()
         _collectedAmount.value = 0.0
         _session.update { cur ->

@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Session.init(this)
         PinStore.init(this)
+        PayApi.warmUp()
         if (savedInstanceState == null) handleLink(intent?.data)
 
         // Restore the saved theme before the first frame so there is no light→dark flash.
