@@ -36,11 +36,20 @@ data class Member(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val contact: String,
+    val email: String? = null,
     val status: PaymentStatus = PaymentStatus.PENDING
 )
 
+fun Member.resolvedEmail(): String {
+    val e = email?.trim()
+    if (!e.isNullOrBlank()) return e
+    val c = contact.trim()
+    if (c.contains("@")) return c
+    return "sb-5myms53858328@personal.example.com"
+}
+
 @Serializable
-enum class PaymentStatus { PENDING, PAID }
+enum class PaymentStatus { PENDING, PAID, OVERDUE }
 
 @Serializable
 data class BillSplitSession(
@@ -48,6 +57,7 @@ data class BillSplitSession(
     @SerialName("merchant_name") val merchantName: String = "Scanned Receipt",
     val items: List<ReceiptItem> = emptyList(),
     val tax: Double = 0.0,
+    val service: Double = 0.0,
     val tip: Double = 0.0,
     val members: List<Member> = emptyList()
 )

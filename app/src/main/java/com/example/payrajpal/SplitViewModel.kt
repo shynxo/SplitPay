@@ -25,6 +25,15 @@ class SplitViewModel : ViewModel() {
     private val _selectedMemberId = MutableStateFlow<String?>(null)
     val selectedMemberId: StateFlow<String?> = _selectedMemberId.asStateFlow()
 
+    private val _splitId = MutableStateFlow<String?>(null)
+    val splitId: StateFlow<String?> = _splitId.asStateFlow()
+
+    private val _serverBreakdowns = MutableStateFlow<Map<String, Double>>(emptyMap())
+    val serverBreakdowns: StateFlow<Map<String, Double>> = _serverBreakdowns.asStateFlow()
+
+    private val _collectedAmount = MutableStateFlow<Double>(0.0)
+    val collectedAmount: StateFlow<Double> = _collectedAmount.asStateFlow()
+
     init {
         loadMockData()
     }
@@ -42,13 +51,15 @@ class SplitViewModel : ViewModel() {
             Transaction(title = "Kabir Singh", subtitle = "Bank Transfer", amount = 1200.0, timestamp = "Nov 6, 6:05 PM", isCredit = true)
         )
 
-        val m1 = Member(id = "m1", name = "You", contact = "shreyan@payrajpal", status = PaymentStatus.PAID)
-        val m2 = Member(id = "m2", name = "Aarav", contact = "+91 9876543210")
-        val m3 = Member(id = "m3", name = "Riya", contact = "riya@paypal.com")
+        val sampleEmail = "sb-5myms53858328@personal.example.com"
+        val m1 = Member(id = "m1", name = "You", contact = "shreyan@payrajpal", email = sampleEmail, status = PaymentStatus.PAID)
+        val m2 = Member(id = "m2", name = "Aarav", contact = "+91 9876543210", email = sampleEmail)
+        val m3 = Member(id = "m3", name = "Riya", contact = "riya@paypal.com", email = sampleEmail)
 
         _session.value = BillSplitSession(
             merchantName = "Cyber Hub Bistro",
             tax = 145.0,
+            service = 0.0,
             tip = 100.0,
             members = listOf(m1, m2, m3),
             items = listOf(
@@ -99,11 +110,65 @@ class SplitViewModel : ViewModel() {
         _selectedMemberId.value = id
     }
 
-    fun addMember(name: String, contact: String) {
-        if (name.isBlank() || contact.isBlank()) return
-        val newMember = Member(name = name.trim(), contact = contact.trim())
+    fun setSplitId(id: String?) {
+        _splitId.value = id
+    }
+
+    fun setServerBreakdowns(map: Map<String, Double>) {
+        _serverBreakdowns.value = map
+    }
+
+    fun setCollectedAmount(amount: Double) {
+        _collectedAmount.value = amount
+    }
+
+    fun addMember(name: String, contact: String, email: String? = null) {
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) return
+        val trimmedContact = contact.trim()
+        val trimmedEmail = email?.trim()?.ifBlank { null }
+
+        val finalContact = trimmedContact.ifBlank { trimmedEmail ?: "" }
+        val finalEmail = trimmedEmail ?: if (trimmedContact.contains("@")) trimmedContact else "sb-5myms53858328@personal.example.com"
+
+        val newMember = Member(
+            id = java.util.UUID.randomUUID().toString(),
+            name = trimmedName,
+            contact = finalContact,
+            email = finalEmail
+        )
         _session.update { it.copy(members = it.members + newMember) }
         _selectedMemberId.value = newMember.id
+    }
+
+    fun updateReceiptFromBackend(
+        billId: String,
+        merchantName: String,
+        items: List<ReceiptItem>,
+        tax: Double,
+        service: Double,
+        tip: Double
+    ) {
+        _session.update { current ->
+            current.copy(
+                billId = if (billId.isNotBlank()) billId else current.billId,
+                merchantName = if (merchantName.isNotBlank()) merchantName else current.merchantName,
+                items = items,
+                tax = tax,
+                service = service,
+                tip = tip
+            )
+        }
+    }
+
+    fun updateMemberStatuses(statuses: Map<String, PaymentStatus>) {
+        _session.update { current ->
+            val updatedMembers = current.members.map { m ->
+                val newStatus = statuses[m.id]
+                if (newStatus != null) m.copy(status = newStatus) else m
+            }
+            current.copy(members = updatedMembers)
+        }
     }
 
     fun toggleItemAssignment(itemId: String) {
@@ -129,6 +194,9 @@ class SplitViewModel : ViewModel() {
     }
 
     fun calculateMemberShare(memberId: String): Double {
+        val serverShare = _serverBreakdowns.value[memberId]
+        if (serverShare != null) return serverShare
+
         val s = _session.value
         val itemsSubtotal = s.items.sumOf { it.price }
         if (itemsSubtotal == 0.0) return 0.0
@@ -140,7 +208,7 @@ class SplitViewModel : ViewModel() {
         }
 
         val proportion = memberSubtotal / itemsSubtotal
-        val total = memberSubtotal + ((s.tax + s.tip) * proportion)
+        val total = memberSubtotal + ((s.tax + s.service + s.tip) * proportion)
         return (total * 100.0).roundToInt() / 100.0
     }
 }

@@ -1,5 +1,7 @@
 package com.example.payrajpal
 
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,7 +41,6 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.PersonAdd
 import androidx.compose.material.icons.outlined.ReceiptLong
-import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -67,6 +68,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.roundToInt
 
 /* ═════════════════════════════ AI BILL SPLIT ═════════════════════════════
  * 1 Receipt → 2 Assign → 3 Request
@@ -76,9 +81,11 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
+    val context = LocalContext.current
     val session by vm.session.collectAsState()
     val selectedMemberId by vm.selectedMemberId.collectAsState()
     val receiptUri by vm.receiptImageUri.collectAsState()
+    val splitId by vm.splitId.collectAsState()
 
     var step by rememberSaveable { mutableIntStateOf(1) }
     var scanning by remember { mutableStateOf(false) }
@@ -86,11 +93,88 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
 
     LaunchedEffect(scanning) {
         if (scanning) {
-            BackendService.callApi("scan-receipt", """{"imageUri": "${receiptUri ?: ""}"}""") { success, response ->
-                scanning = false
-                step = 2 // Moves to "Assign" step after scan finishes
-                println("Backend response: $response")
+            val bytes = receiptUri?.let { uri ->
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                } catch (e: Exception) {
+                    Log.e("BACKEND", "Error reading receipt image bytes", e)
+                    Toast.makeText(context, "Error reading image: ${e.message}", Toast.LENGTH_SHORT).show()
+                    null
+                }
             }
+
+            if (bytes != null && bytes.isNotEmpty()) {
+                BackendService.postReceipt(bytes, context) { success, response ->
+                    scanning = false
+                    step = 2 // Moves to "Assign" step after scan finishes
+                    if (success) {
+                        val parsed = parseReceiptResponse(response)
+                        if (parsed != null) {
+                            vm.updateReceiptFromBackend(
+                                billId = parsed.id,
+                                merchantName = parsed.merchantName,
+                                items = parsed.items,
+                                tax = parsed.tax,
+                                service = parsed.service,
+                                tip = parsed.tip
+                            )
+                        }
+                    }
+                }
+            } else {
+                delay(1000)
+                scanning = false
+                step = 2
+            }
+        }
+    }
+
+    LaunchedEffect(splitId) {
+        val currentSplitId = splitId ?: return@LaunchedEffect
+        while (isActive) {
+            BackendService.getJson("/api/splits/$currentSplitId/invoices", context) { success, response ->
+                if (success) {
+                    try {
+                        val obj = JSONObject(response)
+                        val invoicesArr = obj.optJSONArray("invoices") ?: JSONArray()
+                        val statusMap = mutableMapOf<String, PaymentStatus>()
+                        val amountMap = mutableMapOf<String, Double>()
+
+                        for (i in 0 until invoicesArr.length()) {
+                            val inv = invoicesArr.getJSONObject(i)
+                            val pid = inv.optString("participantId")
+                            val st = inv.optString("status")
+                            val amCents = inv.optDouble("amountCents", -1.0)
+
+                            if (pid.isNotBlank()) {
+                                statusMap[pid] = when {
+                                    st.equals("PAID", ignoreCase = true) -> PaymentStatus.PAID
+                                    st.equals("OVERDUE", ignoreCase = true) -> PaymentStatus.OVERDUE
+                                    else -> PaymentStatus.PENDING
+                                }
+                                if (amCents >= 0.0) {
+                                    amountMap[pid] = amCents / 100.0
+                                }
+                            }
+                        }
+                        if (statusMap.isNotEmpty()) {
+                            vm.updateMemberStatuses(statusMap)
+                        }
+                        if (amountMap.isNotEmpty()) {
+                            vm.setServerBreakdowns(amountMap)
+                        }
+
+                        val summaryObj = obj.optJSONObject("summary")
+                        if (summaryObj != null) {
+                            val collectedCents = summaryObj.optDouble("collectedCents", 0.0)
+                            vm.setCollectedAmount(collectedCents / 100.0)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("BACKEND", "Error parsing invoices poll response", e)
+                    }
+                }
+            }
+            delay(5000)
         }
     }
 
@@ -153,8 +237,8 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
     if (showAdd) {
         AddMemberDialog(
             onDismiss = { showAdd = false },
-            onAdd = { name, contact ->
-                if (name.isNotBlank()) vm.addMember(name.trim(), contact.trim())
+            onAdd = { name, contact, email ->
+                if (name.isNotBlank()) vm.addMember(name.trim(), contact.trim(), email.trim().ifBlank { null })
                 showAdd = false
             }
         )
@@ -246,6 +330,9 @@ private fun ReceiptStep(
                 DetailRow("Items", session.items.size.toString())
                 DetailRow("Subtotal", money(subtotal))
                 DetailRow("Tax", money(session.tax.asDouble()))
+                if (session.service > 0.0) {
+                    DetailRow("Service", money(session.service.asDouble()))
+                }
                 DetailRow("Tip", money(session.tip.asDouble()))
             }
         }
@@ -367,18 +454,12 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
     val context = LocalContext.current
     var phase by rememberSaveable { mutableIntStateOf(0) } // 0 idle · 1 sending · 2 sent
     val members = session.members
-
-    LaunchedEffect(phase) {
-        if (phase == 1) {
-            delay(1600)
-            phase = 2
-        }
-    }
+    val serverBreakdowns by vm.serverBreakdowns.collectAsState()
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 150.dp)) {
             itemsIndexed(members, key = { _, m -> m.id }) { index, m ->
-                val share = vm.calculateMemberShare(m.id).asDouble()
+                val share = serverBreakdowns[m.id] ?: vm.calculateMemberShare(m.id).asDouble()
                 StackCard(
                     color = Pal.stackAt(index),
                     overlap = if (index == members.lastIndex) 0.dp else 32.dp,
@@ -393,7 +474,13 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                         }
                         Column(horizontalAlignment = Alignment.End) {
                             Text(money(share), fontSize = 22.sp)
-                            StatusChip(if (phase == 2) "Requested" else "Pending")
+                            StatusChip(
+                                when (m.status) {
+                                    PaymentStatus.PAID -> "Paid"
+                                    PaymentStatus.OVERDUE -> "Overdue"
+                                    PaymentStatus.PENDING -> if (phase == 2) "Requested" else "Pending"
+                                }
+                            )
                         }
                     }
                 }
@@ -412,8 +499,45 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                 enabled = phase != 2 && members.isNotEmpty(),
                 onClick = {
                     phase = 1
-                    BackendService.callApi("create-split-invoice", """{"sessionId": "session_1"}""") { success, response ->
-                    phase = 2
+                    val splitJson = buildSplitJson(session)
+                    Log.d("BACKEND", "Sending POST /api/splits JSON: $splitJson")
+                    BackendService.postJson("/api/splits", splitJson, context) { success, response ->
+                        if (success) {
+                            try {
+                                val splitObj = JSONObject(response)
+                                val sid = splitObj.optString("splitId")
+
+                                val breakdownsArr = splitObj.optJSONArray("breakdowns")
+                                if (breakdownsArr != null) {
+                                    val map = mutableMapOf<String, Double>()
+                                    for (i in 0 until breakdownsArr.length()) {
+                                        val bObj = breakdownsArr.getJSONObject(i)
+                                        val pid = bObj.optString("participantId")
+                                        val tc = bObj.optDouble("totalCents", 0.0)
+                                        if (pid.isNotBlank()) {
+                                            map[pid] = tc / 100.0
+                                        }
+                                    }
+                                    if (map.isNotEmpty()) {
+                                        vm.setServerBreakdowns(map)
+                                    }
+                                }
+
+                                if (sid.isNotBlank()) {
+                                    vm.setSplitId(sid)
+                                    BackendService.postJson("/api/splits/$sid/invoices", "{}", context) { _, _ ->
+                                        phase = 2
+                                    }
+                                } else {
+                                    phase = 2
+                                }
+                            } catch (e: Exception) {
+                                Log.e("BACKEND", "Error parsing split response", e)
+                                phase = 2
+                            }
+                        } else {
+                            phase = 0
+                        }
                     }
                 }
             )
@@ -421,12 +545,77 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
     }
 }
 
+fun buildSplitJson(session: BillSplitSession): String {
+    val itemsSubtotal = session.items.sumOf { it.price }
+    val totalAmount = itemsSubtotal + session.tax + session.service + session.tip
+
+    val receiptObj = JSONObject().apply {
+        put("id", session.billId)
+        put("merchant", session.merchantName)
+        put("currency", "INR")
+
+        val itemsArr = JSONArray()
+        for (item in session.items) {
+            val itemObj = JSONObject().apply {
+                put("id", item.id)
+                put("name", item.name)
+                put("qty", 1)
+                put("priceCents", (item.price * 100).roundToInt())
+            }
+            itemsArr.put(itemObj)
+        }
+        put("items", itemsArr)
+        put("taxCents", (session.tax * 100).roundToInt())
+        put("serviceCents", (session.service * 100).roundToInt())
+        put("tipCents", (session.tip * 100).roundToInt())
+        put("totalCents", (totalAmount * 100).roundToInt())
+    }
+
+    val participantsArr = JSONArray()
+    for (m in session.members) {
+        val pObj = JSONObject().apply {
+            put("id", m.id)
+            put("name", m.name)
+            put("email", m.resolvedEmail())
+        }
+        participantsArr.put(pObj)
+    }
+
+    val assignmentsArr = JSONArray()
+    for (item in session.items) {
+        val sharesArr = JSONArray()
+        for (memberId in item.assignedTo) {
+            val shareObj = JSONObject().apply {
+                put("participantId", memberId)
+                put("weight", 1)
+            }
+            sharesArr.put(shareObj)
+        }
+        val assignObj = JSONObject().apply {
+            put("itemId", item.id)
+            put("shares", sharesArr)
+        }
+        assignmentsArr.put(assignObj)
+    }
+
+    val root = JSONObject().apply {
+        put("receipt", receiptObj)
+        put("participants", participantsArr)
+        put("assignments", assignmentsArr)
+        put("tipRule", "even")
+        put("taxRule", "proportional")
+    }
+
+    return root.toString()
+}
+
 /* ───────────── dialogs ───────────── */
 
 @Composable
-fun AddMemberDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
+fun AddMemberDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> Unit) {
     var name by remember { mutableStateOf("") }
     var contact by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Pal.Surface,
@@ -435,10 +624,11 @@ fun AddMemberDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 PayTextField(name, { name = it }, "Name")
-                PayTextField(contact, { contact = it }, "Phone or email")
+                PayTextField(contact, { contact = it }, "Phone or contact")
+                PayTextField(email, { email = it }, "Email (optional)")
             }
         },
-        confirmButton = { TextButton(onClick = { onAdd(name, contact) }) { Text("Add", color = Pal.CoralDeep) } },
+        confirmButton = { TextButton(onClick = { onAdd(name, contact, email) }) { Text("Add", color = Pal.CoralDeep) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Pal.Ink) } }
     )
 }
