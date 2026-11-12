@@ -26,7 +26,7 @@ data class ParsedReceipt(
 )
 
 object BackendService {
-    private const val BASE_URL = "http://127.0.0.1:3000"
+    private const val BASE_URL = "https://splitpay-server-duh3.onrender.com"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(90, TimeUnit.SECONDS)
@@ -120,18 +120,20 @@ object BackendService {
 
     fun postReceipt(
         imageBytes: ByteArray,
+        mimeType: String = "image/jpeg",
         context: Context? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         val url = "$BASE_URL/api/receipts"
-        Log.d("BACKEND", "REQUEST [POST] $url (image ${imageBytes.size} bytes)")
+        Log.d("BACKEND", "REQUEST [POST] $url (image ${imageBytes.size} bytes, $mimeType)")
 
+        val fileName = if (mimeType.contains("png")) "receipt.png" else "receipt.jpg"
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart(
                 "image",
-                "receipt.jpg",
-                imageBytes.toRequestBody("image/jpeg".toMediaType())
+                fileName,
+                imageBytes.toRequestBody(mimeType.toMediaType())
             )
             .build()
 
@@ -172,13 +174,16 @@ fun parseReceiptResponse(jsonStr: String): ParsedReceipt? {
         for (i in 0 until itemsArr.length()) {
             val itemObj = itemsArr.getJSONObject(i)
             val itemId = itemObj.optString("id", UUID.randomUUID().toString())
-            val name = itemObj.optString("name", "Item")
+            val baseName = itemObj.optString("name", "Item")
+            val qty = itemObj.optInt("qty", 1).coerceAtLeast(1)
             val priceCents = itemObj.optDouble("priceCents", 0.0)
+            // Server price is per unit. The app has no quantity, so show the line total.
+            val name = if (qty > 1) "$baseName x$qty" else baseName
             itemsList.add(
                 ReceiptItem(
                     id = itemId,
                     name = name,
-                    price = priceCents / 100.0,
+                    price = (priceCents * qty) / 100.0,
                     assignedTo = emptyList()
                 )
             )

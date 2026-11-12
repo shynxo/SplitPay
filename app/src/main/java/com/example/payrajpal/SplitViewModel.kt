@@ -51,25 +51,38 @@ class SplitViewModel : ViewModel() {
             Transaction(title = "Kabir Singh", subtitle = "Bank Transfer", amount = 1200.0, timestamp = "Nov 6, 6:05 PM", isCredit = true)
         )
 
-        val sampleEmail = "sb-5myms53858328@personal.example.com"
-        val m1 = Member(id = "m1", name = "You", contact = "shreyan@payrajpal", email = sampleEmail, status = PaymentStatus.PAID)
-        val m2 = Member(id = "m2", name = "Aarav", contact = "+91 9876543210", email = sampleEmail)
-        val m3 = Member(id = "m3", name = "Riya", contact = "riya@paypal.com", email = sampleEmail)
+        // Fresh bill: only "You" is in the list. Friends are added with the + button, receipt items come from the scan.
+        val m1 = Member(
+            id = "m1",
+            name = "You",
+            contact = "you@payrajpal",
+            email = "sb-5myms53858328@personal.example.com",
+            status = PaymentStatus.PAID
+        )
 
         _session.value = BillSplitSession(
-            merchantName = "Cyber Hub Bistro",
-            tax = 145.0,
+            merchantName = "Scanned Receipt",
+            tax = 0.0,
             service = 0.0,
-            tip = 100.0,
-            members = listOf(m1, m2, m3),
-            items = listOf(
-                ReceiptItem(name = "Truffle Mushroom Pizza", price = 650.0, assignedTo = listOf("m1", "m2")),
-                ReceiptItem(name = "Peri Peri Fries", price = 280.0, assignedTo = listOf("m1", "m2", "m3")),
-                ReceiptItem(name = "Iced Matcha Latte", price = 320.0, assignedTo = listOf("m3")),
-                ReceiptItem(name = "Classic Smash Burger", price = 490.0, assignedTo = listOf("m2"))
-            )
+            tip = 0.0,
+            members = listOf(m1),
+            items = emptyList()
         )
-        _selectedMemberId.value = m2.id
+        _selectedMemberId.value = m1.id
+    }
+
+    /** Forget any previously sent split so old amounts/statuses never leak into a new request. */
+    private fun resetSendState() {
+        _splitId.value = null
+        _serverBreakdowns.value = emptyMap()
+        _collectedAmount.value = 0.0
+        _session.update { cur ->
+            cur.copy(
+                members = cur.members.map {
+                    it.copy(status = if (it.id == "m1") PaymentStatus.PAID else PaymentStatus.PENDING)
+                }
+            )
+        }
     }
 
     fun addBankAccount(bankName: String, last4: String) {
@@ -137,6 +150,7 @@ class SplitViewModel : ViewModel() {
             contact = finalContact,
             email = finalEmail
         )
+        resetSendState()
         _session.update { it.copy(members = it.members + newMember) }
         _selectedMemberId.value = newMember.id
     }
@@ -149,6 +163,7 @@ class SplitViewModel : ViewModel() {
         service: Double,
         tip: Double
     ) {
+        resetSendState()
         _session.update { current ->
             current.copy(
                 billId = if (billId.isNotBlank()) billId else current.billId,
@@ -173,6 +188,7 @@ class SplitViewModel : ViewModel() {
 
     fun toggleItemAssignment(itemId: String) {
         val activeMember = _selectedMemberId.value ?: return
+        resetSendState()
         _session.update { current ->
             val updatedItems = current.items.map { item ->
                 if (item.id == itemId) {
@@ -185,6 +201,7 @@ class SplitViewModel : ViewModel() {
     }
 
     fun updateItem(itemId: String, newName: String, newPrice: Double) {
+        resetSendState()
         _session.update { current ->
             val updatedItems = current.items.map {
                 if (it.id == itemId) it.copy(name = newName, price = newPrice) else it
