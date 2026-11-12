@@ -87,44 +87,62 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
     val receiptUri by vm.receiptImageUri.collectAsState()
     val splitId by vm.splitId.collectAsState()
 
-    var step by rememberSaveable { mutableIntStateOf(1) }
+    var step by rememberSaveable { mutableIntStateOf(0) }
     var scanning by remember { mutableStateOf(false) }
     var showAdd by remember { mutableStateOf(false) }
 
     LaunchedEffect(scanning) {
         if (scanning) {
-            val bytes = receiptUri?.let { uri ->
+            val uri = receiptUri
+            val bytes = uri?.let { u ->
                 try {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    context.contentResolver.openInputStream(u)?.use { it.readBytes() }
                 } catch (e: Exception) {
                     Log.e("BACKEND", "Error reading receipt image bytes", e)
                     Toast.makeText(context, "Error reading image: ${e.message}", Toast.LENGTH_SHORT).show()
                     null
                 }
             }
+            val mime = uri?.let { context.contentResolver.getType(it) } ?: "image/jpeg"
 
             if (bytes != null && bytes.isNotEmpty()) {
-                BackendService.postReceipt(bytes, context) { success, response ->
+                BackendService.postReceipt(bytes, mime, context) { success, response ->
                     scanning = false
-                    step = 2 // Moves to "Assign" step after scan finishes
-                    if (success) {
-                        val parsed = parseReceiptResponse(response)
-                        if (parsed != null) {
-                            vm.updateReceiptFromBackend(
-                                billId = parsed.id,
-                                merchantName = parsed.merchantName,
-                                items = parsed.items,
-                                tax = parsed.tax,
-                                service = parsed.service,
-                                tip = parsed.tip
-                            )
-                        }
+                    val parsed = if (success) parseReceiptResponse(response) else null
+                    if (parsed != null && parsed.items.isNotEmpty()) {
+                        vm.updateReceiptFromBackend(
+                            billId = parsed.id,
+                            merchantName = parsed.merchantName,
+                            items = parsed.items,
+                            tax = parsed.tax,
+                            service = parsed.service,
+                            tip = parsed.tip
+                        )
+                        step = 1 // go to "Assign"
+                    } else {
+                        Toast.makeText(context, "Couldn't read the receipt. Try a clearer photo.", Toast.LENGTH_LONG).show()
                     }
                 }
             } else {
-                delay(1000)
+                delay(800)
+                if (uri == null) {
+                    // "Use sample bill" button: load a built-in bill so the demo works without a photo
+                    vm.updateReceiptFromBackend(
+                        billId = "",
+                        merchantName = "Cyber Hub Bistro",
+                        items = listOf(
+                            ReceiptItem(name = "Truffle Mushroom Pizza", price = 650.0),
+                            ReceiptItem(name = "Peri Peri Fries", price = 280.0),
+                            ReceiptItem(name = "Iced Matcha Latte", price = 320.0),
+                            ReceiptItem(name = "Classic Smash Burger", price = 490.0)
+                        ),
+                        tax = 145.0,
+                        service = 0.0,
+                        tip = 100.0
+                    )
+                    step = 1
+                }
                 scanning = false
-                step = 2
             }
         }
     }
@@ -133,7 +151,8 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
         val currentSplitId = splitId ?: return@LaunchedEffect
         while (isActive) {
             BackendService.getJson("/api/splits/$currentSplitId/invoices", context) { success, response ->
-                if (success) {
+                // ignore late answers for an old split
+                if (success && vm.splitId.value == currentSplitId) {
                     try {
                         val obj = JSONObject(response)
                         val invoicesArr = obj.optJSONArray("invoices") ?: JSONArray()
@@ -206,7 +225,10 @@ fun SplitScreen(vm: SplitViewModel, nav: Navigator) {
                         receiptUri = receiptUri,
                         scanning = scanning,
                         onUpload = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        onSample = { scanning = true }
+                        onSample = {
+                            vm.setReceiptImage(null)
+                            scanning = true
+                        }
                     )
                     1 -> AssignStep(
                         session = session,
@@ -456,6 +478,11 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
     val members = session.members
     val serverBreakdowns by vm.serverBreakdowns.collectAsState()
 
+    // Added a friend or changed items after sending? Allow sending again.
+    LaunchedEffect(members.size, session.items) {
+        if (phase != 1) phase = 0
+    }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 150.dp)) {
             itemsIndexed(members, key = { _, m -> m.id }) { index, m ->
@@ -496,7 +523,7 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
                 subtitle = if (phase == 0) "Each person gets their own amount" else null,
                 loading = phase == 1,
                 haptic = HapticKind.Heavy,
-                enabled = phase != 2 && members.isNotEmpty(),
+                enabled = phase != 2 && members.size > 1 && session.items.isNotEmpty(),
                 onClick = {
                     phase = 1
                     val splitJson = buildSplitJson(session)
@@ -525,8 +552,12 @@ private fun SummaryStep(session: BillSplitSession, vm: SplitViewModel) {
 
                                 if (sid.isNotBlank()) {
                                     vm.setSplitId(sid)
-                                    BackendService.postJson("/api/splits/$sid/invoices", "{}", context) { _, _ ->
-                                        phase = 2
+                                    BackendService.postJson("/api/splits/$sid/invoices", "{}", context) { ok, body ->
+                                        phase = if (ok) 2 else 0
+                                        // PayPal can refuse one person (e.g. bad email) while the call itself succeeds
+                                        if (ok && body.contains("\"error\":\"")) {
+                                            Toast.makeText(context, "Some invoices failed. Check the emails.", Toast.LENGTH_LONG).show()
+                                        }
                                     }
                                 } else {
                                     phase = 2
@@ -577,6 +608,7 @@ fun buildSplitJson(session: BillSplitSession): String {
             put("id", m.id)
             put("name", m.name)
             put("email", m.resolvedEmail())
+            put("self", m.id == "m1") // "You" paid the bill, so you are not invoiced
         }
         participantsArr.put(pObj)
     }
